@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>영한번역</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <a href="#/" class="brand">영한번역</a>
+  <span id="doc-title"></span>
+  <span class="spacer"></span>
+  <span id="queue-status" class="muted"></span>
+</header>
+
+<main id="home" class="view">
+  <section class="card">
+    <h2>교안 열기</h2>
+    <form id="upload-form">
+      <input type="file" id="file" accept="application/pdf" required>
+      <input type="text" id="subject" placeholder="과목명 (예: 인공지능)">
+      <button type="submit" class="btn-primary">불러오기</button>
+    </form>
+    <ul id="doc-list" class="list"></ul>
+  </section>
+  <section class="card">
+    <h2>요약 프롬프트</h2>
+    <p class="muted">복사해서 클로드 조교에게 붙여 넣기. 교안 이름 자리만 채우면 됨.</p>
+    <button id="copy-summary" class="btn-soft">📋 프롬프트 복사</button>
+    <pre id="summary-prompt" class="prompt"></pre>
+  </section>
+  <section class="card">
+    <h2>단어장</h2>
+    <p class="muted"><span id="vocab-count">0</span>개 누적. 과목별 Anki 덱(.apkg)으로 내보내기 → 노트북 Anki에 가져오기 → AnkiWeb 동기화.</p>
+    <button id="anki-export" class="btn-primary">Anki 덱 만들기</button>
+    <span id="anki-result" class="muted"></span>
+    <details><summary>목록 보기</summary><table id="vocab-table"></table></details>
+  </section>
+</main>
+
+<main id="reader" class="view hidden">
+  <div class="toolbar">
+    <span class="btn-group">
+      <button id="prev" class="btn-icon" title="이전 페이지 (←)">◀</button>
+      <span><input id="page-input" type="number" min="1" value="1"> / <span id="page-count">?</span></span>
+      <button id="next" class="btn-icon" title="다음 페이지 (→)">▶</button>
+    </span>
+    <span class="btn-group" title="확대·축소 (⌘+ / ⌘− / ⌘0)">
+      <button id="zoom-out" class="btn-icon">−</button>
+      <span id="zoom-label">맞춤</span>
+      <button id="zoom-in" class="btn-icon">+</button>
+      <button id="zoom-fit" class="btn-icon" title="폭 맞춤">⤢</button>
+    </span>
+    <span class="sep"></span>
+    <button id="mic-read" class="mic" title="영어로 단어나 문장을 소리 내어 읽기">🎤 읽기</button>
+    <button id="mic-ask" class="mic" title="한국어로 질문 말하기">🎤 질문</button>
+    <span id="mic-status" class="muted"></span>
+    <span class="spacer"></span>
+    <button id="export" class="btn-primary">탭용 PDF 내보내기</button>
+    <a id="export-dl" class="hidden" href="#">⬇ 다운로드</a>
+  </div>
+  <div class="split">
+    <div id="stage-wrap">
+      <div id="stage">
+        <img id="page-img" alt="">
+        <div id="overlay"></div>
+      </div>
+    </div>
+    <aside id="side">
+      <details open>
+        <summary>문장 번역 <span id="sent-count" class="muted"></span></summary>
+        <ul id="sent-list" class="list"></ul>
+      </details>
+      <details>
+        <summary>이 페이지 단어 <span id="word-count" class="muted"></span></summary>
+        <ul id="word-list" class="list"></ul>
+      </details>
+      <details>
+        <summary>예습 질문 <span id="q-count" class="muted"></span></summary>
+        <div class="row">
+          <input id="q-input" type="text" placeholder="타자로 추가">
+          <button id="q-add">추가</button>
+          <button id="q-copy" class="btn-soft">📋 전체 복사</button>
+        </div>
+        <ul id="q-list" class="list"></ul>
+      </details>
+    </aside>
+  </div>
+</main>
+
+<div id="toast" class="hidden"></div>
+<script src="app.js"></script>
+</body>
+</html>
