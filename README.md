@@ -47,6 +47,8 @@ python3 -m pip install -r requirements.txt
 | | Google Drive 데스크톱 | — | 내보낸 PDF를 태블릿으로 동기화 |
 | **Tooling** | git, `.claude/launch.json` | — | 버전 관리, 개발 서버 자동 재시작 |
 
+표의 각 기술이 무엇인지(유래·사례·이 프로젝트에서의 쓰임)는 [docs/기술-용어-설명.md](docs/기술-용어-설명.md).
+
 ## 구조도
 ```mermaid
 flowchart LR
