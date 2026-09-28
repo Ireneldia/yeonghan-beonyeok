@@ -22,6 +22,55 @@ python3 -m pip install -r requirements.txt
 4. 2회독하며 **🎤 질문**을 누르고 한국어로 말한 뒤 **다시 눌러 끄면**, 녹음 전체를 로컬 Whisper가 받아쓰고(오디오는 밖으로 안 나감) Sonnet이 교안 용어·LaTeX 수식으로 정리해 질문 하나로 쌓는다. 중간에 쉬어도 안 끊김. **전체 복사(프롬프트)** → 클로드 조교/whisper-note 예습 질문란.
 5. 홈 → **Anki 덱 만들기** → `data/exports/<과목>.apkg` → 노트북 Anki에 가져오기 → AnkiWeb 동기화 → 아이폰 Safari로 복습.
 
+## 기술 스택
+| 층 | 선택 | 왜 |
+|---|---|---|
+| 실행 형태 | 노트북 로컬 웹앱 (`localhost:8766`) | 설치·배포 없음. 개인 도구 |
+| 프런트 | 순수 HTML/JS/CSS (빌드 없음) | 페이지 이미지 위에 단어 박스 오버레이, 접이식 패널 |
+| 🎤 읽기 | Chrome Web Speech API (en-US) | 무료·즉시 반응. 인식 결과를 현재 페이지 단어·문장과 발음 유사도로 맞추므로 정확도가 낮아도 됨 |
+| 🎤 질문 | MediaRecorder 녹음 → **faster-whisper** large-v3-turbo (로컬, int8) | 침묵에 안 끊김, 오디오가 밖으로 안 나감. M4 Pro에서 10초 음성 ≈ 8초 |
+| 백엔드 | Python 3.13 + FastAPI + uvicorn | PDF·매칭·LLM·DB 한 곳 |
+| PDF | PyMuPDF | 단어 좌표, 문장 분리(슬라이드는 줄 기준, 본문은 마침표 기준), 렌더링, 내보내기 때 밑줄·한글·문장 블록 굽기 |
+| 매칭 | rapidfuzz | 단어: 편집 거리, 문장: 토큰 겹침 |
+| LLM | Claude Code CLI 헤드리스 (`claude -p`) — haiku: 단어 뜻·문장 번역, sonnet: 질문 교정(용어·LaTeX) | 구독으로 비용 0. API 전환은 `llm.py`의 `ask()` 하나만 |
+| 큐 | asyncio 큐 + 워커 3, 프런트 1.5초 폴링 | 조회를 기다리지 않고 계속 읽기 |
+| 저장 | SQLite 파일 하나 | 교안, 조회 기록, 질문, 단어장 |
+| 카드 | genanki → .apkg | 노트북 Anki → AnkiWeb 동기화 → iPhone Safari |
+| 폰트 | macOS 기본 AppleGothic (TTF) | PyMuPDF는 OTF 글리프가 깨짐 |
+
+## 구조도
+```mermaid
+flowchart LR
+  subgraph FE["Chrome · frontend (순수 JS)"]
+    V["PDF 뷰어<br/>단어 클릭 · 문장 드래그"]
+    R["🎤 읽기<br/>Web Speech API (en-US)"]
+    Q["🎤 질문<br/>MediaRecorder 녹음"]
+    P["문장 패널 · 질문 목록<br/>1.5초 폴링"]
+  end
+  subgraph BE["FastAPI · backend (Python)"]
+    PDF["pdfx.py · PyMuPDF<br/>단어 좌표 · 문장 분리 · 렌더링"]
+    M["match.py · rapidfuzz<br/>발음 유사도 매칭"]
+    QU["번역 큐<br/>asyncio, 워커 3"]
+    W["stt.py · faster-whisper<br/>large-v3-turbo (로컬)"]
+    LLM["llm.py<br/>claude -p"]
+    DB[("SQLite")]
+    EX["내보내기<br/>밑줄 · 한글 · 문장 블록 굽기"]
+    AK["anki.py · genanki"]
+  end
+  CC["Claude Code CLI (구독)<br/>haiku: 뜻 · 번역<br/>sonnet: 질문 교정 · LaTeX"]
+  OUT[("data/exports<br/>탭용 PDF · .apkg")]
+
+  PDF -->|페이지 이미지 · 단어 박스| V
+  V -->|단어 · 문장 조회| QU
+  R -->|인식 텍스트| M -->|맞춘 단어 · 문장| QU
+  Q -->|webm| W -->|받아쓴 원문| LLM
+  QU -->|페이지 맥락 동봉| LLM
+  LLM <--> CC
+  LLM --> DB --> P
+  DB --> EX --> OUT
+  DB --> AK --> OUT
+```
+
 ## 구조
 ```
 backend/app.py     FastAPI 라우트, 번역 큐(백그라운드 2개)
