@@ -23,20 +23,29 @@ python3 -m pip install -r requirements.txt
 5. 홈 → **Anki 덱 만들기** → `data/exports/<과목>.apkg` → 노트북 Anki에 가져오기 → AnkiWeb 동기화 → 아이폰 Safari로 복습.
 
 ## 기술 스택
-| 층 | 선택 | 왜 |
-|---|---|---|
-| 실행 형태 | 노트북 로컬 웹앱 (`localhost:8766`) | 설치·배포 없음. 개인 도구 |
-| 프런트 | 순수 HTML/JS/CSS (빌드 없음) | 페이지 이미지 위에 단어 박스 오버레이, 접이식 패널 |
-| 🎤 읽기 | Chrome Web Speech API (en-US) | 무료·즉시 반응. 인식 결과를 현재 페이지 단어·문장과 발음 유사도로 맞추므로 정확도가 낮아도 됨 |
-| 🎤 질문 | MediaRecorder 녹음 → **faster-whisper** large-v3-turbo (로컬, int8) | 침묵에 안 끊김, 오디오가 밖으로 안 나감. M4 Pro에서 10초 음성 ≈ 8초 |
-| 백엔드 | Python 3.13 + FastAPI + uvicorn | PDF·매칭·LLM·DB 한 곳 |
-| PDF | PyMuPDF | 단어 좌표, 문장 분리(슬라이드는 줄 기준, 본문은 마침표 기준), 렌더링, 내보내기 때 밑줄·한글·문장 블록 굽기 |
-| 매칭 | rapidfuzz | 단어: 편집 거리, 문장: 토큰 겹침 |
-| LLM | Claude Code CLI 헤드리스 (`claude -p`) — haiku: 단어 뜻·문장 번역, sonnet: 질문 교정(용어·LaTeX) | 구독으로 비용 0. API 전환은 `llm.py`의 `ask()` 하나만 |
-| 큐 | asyncio 큐 + 워커 3, 프런트 1.5초 폴링 | 조회를 기다리지 않고 계속 읽기 |
-| 저장 | SQLite 파일 하나 | 교안, 조회 기록, 질문, 단어장 |
-| 카드 | genanki → .apkg | 노트북 Anki → AnkiWeb 동기화 → iPhone Safari |
-| 폰트 | macOS 기본 AppleGothic (TTF) | PyMuPDF는 OTF 글리프가 깨짐 |
+
+| 분류 | 기술 | 버전 | 역할 |
+|---|---|---|---|
+| **Language** | Python | 3.13 | 백엔드 전체 |
+| | JavaScript (ES2022) | — | 프런트엔드. 프레임워크·번들러 없음 |
+| **Backend** | FastAPI | 0.141 | REST API, 정적 파일 서빙, 백그라운드 큐 |
+| | Uvicorn | 0.54 | ASGI 서버 |
+| | asyncio + ThreadPoolExecutor | stdlib | 번역 큐(워커 3), CPU 작업 분리 |
+| **Frontend** | HTML / CSS / Vanilla JS | — | PDF 뷰어, 단어 박스 오버레이, 접이식 패널 |
+| | Web Speech API | Chrome 내장 | 🎤 읽기 (영어 인식) |
+| | MediaRecorder API | 브라우저 표준 | 🎤 질문 녹음 (webm/opus) |
+| **AI / ML** | Claude Code CLI (`claude -p`) | 2.1 | LLM 호출 (구독 기반, API 키 불필요) |
+| | Claude Haiku | 별칭 `haiku` | 단어 뜻, 문장 번역 |
+| | Claude Sonnet | 별칭 `sonnet` | 질문 교정 (용어·LaTeX) |
+| | faster-whisper (CTranslate2) | 1.2 / 4.8 | 로컬 음성 인식, 모델 large-v3-turbo int8 |
+| **Document** | PyMuPDF (MuPDF) | 1.27 | PDF 파싱(단어 좌표·문장 분리), 렌더링, 주석 굽기 |
+| | rapidfuzz | 3.14 | 음성 인식 결과 ↔ 페이지 텍스트 유사도 매칭 |
+| | genanki | 0.13 | Anki 덱(.apkg) 생성 |
+| **Data** | SQLite | 3.51 | 교안·조회·질문·단어장 (단일 파일) |
+| | JSON 파일 캐시 | — | 페이지별 단어 좌표 캐시 |
+| **Infra** | localhost (macOS) | — | 단일 사용자 로컬 실행, 포트 8766 |
+| | Google Drive 데스크톱 | — | 내보낸 PDF를 태블릿으로 동기화 |
+| **Tooling** | git, `.claude/launch.json` | — | 버전 관리, 개발 서버 자동 재시작 |
 
 ## 구조도
 ```mermaid
