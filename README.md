@@ -10,10 +10,10 @@
 
 처음 한 번:
 ```bash
-python3 -m pip install fastapi "uvicorn[standard]" rapidfuzz genanki python-multipart pymupdf faster-whisper
+python3 -m pip install -r requirements.txt
 ```
 번역은 `claude -p`(Claude Code 헤드리스, 구독 사용)로 한다. API 키 불필요. 단어·문장 번역 모델은 `YH_MODEL`(기본 haiku), 질문 교정 모델은 `YH_FIX_MODEL`(기본 sonnet).
-질문 받아쓰기는 로컬 Whisper(`faster-whisper`). 모델은 `data/models/faster-whisper-large-v3-turbo/`에 있어야 한다. 없으면 `./data/models/download.sh`로 받는다(1.6GB, Hugging Face 자동 다운로드는 자주 멈춰서 미러 이어받기 스크립트를 쓴다). 🎤 읽기는 Chrome 내장 인식 그대로.
+질문 받아쓰기는 로컬 Whisper(`faster-whisper`). 모델은 `data/models/faster-whisper-large-v3-turbo/`에 있어야 한다. 없으면 `./scripts/download-whisper.sh`로 받는다(1.6GB, Hugging Face 자동 다운로드는 자주 멈춰서 미러 이어받기 스크립트를 쓴다). 🎤 읽기는 Chrome 내장 인식 그대로.
 
 ## 아침 루틴
 1. 홈 → PDF 불러오기(과목명 입력) → "요약 프롬프트 복사" → 클로드 조교에 붙여 요약 받기.
@@ -42,6 +42,17 @@ data/              업로드 PDF, 페이지 캐시, 내보낸 파일 (git 제외
 - 한글 폰트는 TTF만 쓴다(AppleGothic / NanumGothic). Pretendard 같은 OTF는 PyMuPDF에서 글리프가 깨진다.
 - 8765 포트는 다른 프로젝트 서버가 써서 8766을 쓴다.
 - 교안을 다시 올리면 새 문서로 취급된다(변경 병합은 아직 없음).
+
+## 다른 Mac에서 설치
+받는 사람 쪽에 필요한 것:
+1. **Python 3.10+** → `python3 -m pip install -r requirements.txt`
+2. **Claude Code CLI** 설치 + 로그인(Claude 구독). 번역·교정이 `claude -p`를 부른다. 구독이 없으면 `backend/llm.py`의 `ask()`를 Anthropic API 호출로 바꾸면 된다(그 함수 하나만 쓴다).
+3. **Whisper 모델** → `./scripts/download-whisper.sh` (1.6GB, 한 번만)
+4. **Chrome** (🎤 읽기의 음성 인식은 Chrome 내장)
+5. 실행 → `./run.sh` 또는 `./start.sh`, 브라우저에서 http://localhost:8766
+
+한글 폰트는 macOS 기본 AppleGothic을 쓰므로 따로 설치할 것 없음. 포트가 겹치면 `run.sh`·`.claude/launch.json`의 8766을 바꾼다.
+바탕화면 바로가기를 원하면 `start.sh`를 부르는 `.command` 파일을 하나 만들면 된다(아래 참고).
 
 ## 바로가기
 바탕화면의 `영한번역.command`를 더블클릭하면 서버를 띄우고 Chrome을 연다(이미 떠 있으면 Chrome만). 터미널 창을 닫으면 서버가 꺼진다. 실체는 `start.sh`.
