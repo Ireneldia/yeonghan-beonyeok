@@ -10,8 +10,6 @@ import {
 import {
   BookOpen,
   ChevronDown,
-  ChevronLeft,
-  ChevronRight,
   Download,
   FileText,
   FolderOpen,
@@ -19,8 +17,6 @@ import {
   FolderPlus,
   Library,
   Loader2,
-  MessageSquare,
-  Mic,
   Moon,
   Pencil,
   Plus,
@@ -28,13 +24,9 @@ import {
   Search,
   Settings2,
   Sparkles,
-  Square,
   Sun,
   Trash2,
   Upload,
-  Volume2,
-  ZoomIn,
-  ZoomOut,
 } from "lucide-react"
 import { toast } from "sonner"
 import { api } from "@/lib/api"
@@ -61,20 +53,17 @@ import type {
   Folder,
   Lookup,
   LookupInput,
-  PageMeta,
   Question,
   SpeechContext,
   SpeechSettings,
   Vocab,
 } from "@/lib/types"
 import { useModels } from "@/hooks/useModels"
-import { useSpeech } from "@/hooks/useSpeech"
-import { useIsMobile } from "@/hooks/use-mobile"
 import { useTheme } from "@/components/theme-provider"
 import { FitDot } from "@/components/FitDot"
 import { ModelSettings } from "@/components/ModelSettings"
 import { ModelDownloads } from "@/components/ModelDownloads"
-import { PdfViewer } from "@/components/PdfViewer"
+import { Reader } from "@/components/Reader"
 import { NotesPanel, type PendingQuestion } from "@/components/NotesPanel"
 import { FolderSelect } from "@/components/FolderSelect"
 import { FolderActions } from "@/components/FolderActions"
@@ -98,12 +87,6 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover"
 import {
-  Sheet,
-  SheetContent,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet"
-import {
   Sidebar,
   SidebarContent,
   SidebarFooter,
@@ -119,19 +102,7 @@ import {
   SidebarSeparator,
   SidebarTrigger,
 } from "@/components/ui/sidebar"
-import {
-  ResizableHandle,
-  ResizablePanel,
-  ResizablePanelGroup,
-} from "@/components/ui/resizable"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
 import {
   Table,
   TableBody,
@@ -140,7 +111,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { Skeleton } from "@/components/ui/skeleton"
 import { Toaster } from "@/components/ui/sonner"
 
 const abortError = (error: unknown) =>
@@ -160,22 +130,8 @@ export function App() {
     lookups: Lookup[]
     questions: Question[]
   } | null>(null)
-  const [pageData, setPageData] = useState<{
-    key: string
-    meta: PageMeta
-  } | null>(null)
   const [readerError, setReaderError] = useState("")
   const [reload, setReload] = useState(0)
-  const [zoom, setZoom] = useState(0)
-  const [pdfView, setPdfView] = useState<"page" | "continuous">(() => {
-    try {
-      return localStorage.getItem("yeonghan-pdf-view") === "continuous"
-        ? "continuous"
-        : "page"
-    } catch {
-      return "page"
-    }
-  })
   const [tab, setTab] = useState("words")
   const [query, setQuery] = useState("")
   const [uploadOpen, setUploadOpen] = useState(false)
@@ -218,14 +174,8 @@ export function App() {
   const [speechSettings, setSpeechSettings] = useState<SpeechSettings | null>(
     null
   )
-  const [notesOpen, setNotesOpen] = useState(false)
   const [pendingQuestions, setPendingQuestions] =
     useState<PendingQuestion[]>(loadQuestionDrafts)
-  const [flash, setFlash] = useState<{
-    docId: string
-    page: number
-    ids: number[]
-  } | null>(null)
   const [exporting, setExporting] = useState(false)
   const [exportConfirm, setExportConfirm] = useState(false)
   const [ankiBusy, setAnkiBusy] = useState(false)
@@ -233,20 +183,14 @@ export function App() {
   const lookupRevision = useRef(0)
   const deletedDocs = useRef(new Set<string>())
   const speechSettingsRevision = useRef({ revision: 0 })
-  const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const uploadInput = useRef<HTMLInputElement>(null)
   const importing = useRef(false)
   const movingBatch = useRef(false)
   const modelState = useModels()
   const { theme, setTheme } = useTheme()
-  const mobile = useIsMobile()
   const doc = session?.doc.id === route.docId ? session.doc : null
   const currentFolder = folders.find((folder) => folder.id === route.folderId)
   const page = doc ? Math.min(route.page, doc.pages - 1) : route.page
-  const pageKey = `${route.docId}:${page}`
-  const meta = pageData?.key === pageKey ? pageData.meta : null
-  const flashWordIds =
-    flash?.docId === doc?.id && flash?.page === page ? flash.ids : []
   const lookups = doc ? session!.lookups : []
   const questions = doc ? session!.questions : []
   const pendingCount = lookups.filter((row) => row.status === "pending").length
@@ -272,13 +216,6 @@ export function App() {
       setRoute(readRoute())
     },
     [route.docId]
-  )
-  const pageMetaLoaded = useCallback(
-    (id: string, next: number, value: PageMeta) => {
-      if (readRoute().docId === id)
-        setPageData({ key: `${id}:${next}`, meta: value })
-    },
-    []
   )
 
   useEffect(() => {
@@ -440,64 +377,6 @@ export function App() {
       controller.abort()
     }
   }, [route.docId, pendingCount])
-  useEffect(() => {
-    if (!doc) return
-    const keydown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented) return
-      if (
-        (event.target as HTMLElement)?.closest(
-          "input,textarea,[contenteditable=true],[role=combobox],[role=listbox],[role=dialog],[role=menu]"
-        )
-      )
-        return
-      if (event.ctrlKey || event.metaKey) {
-        if (["=", "+", "-", "0"].includes(event.key)) {
-          event.preventDefault()
-          setZoom((current) =>
-            event.key === "0"
-              ? 0
-              : Math.min(
-                  4,
-                  Math.max(
-                    0.4,
-                    (current || 1) * (event.key === "-" ? 1 / 1.15 : 1.15)
-                  )
-                )
-          )
-        }
-      } else if (
-        ["ArrowLeft", "PageUp", "ArrowRight", "PageDown"].includes(event.key)
-      ) {
-        if (
-          pdfView === "continuous" &&
-          ["PageUp", "PageDown"].includes(event.key)
-        ) {
-          const viewport =
-            document.querySelector<HTMLElement>("[data-pdf-scroll]")
-          if (viewport) {
-            event.preventDefault()
-            viewport.scrollBy({
-              top:
-                viewport.clientHeight * 0.9 * (event.key === "PageUp" ? -1 : 1),
-            })
-          }
-          return
-        }
-        event.preventDefault()
-        const next =
-          page + (["ArrowLeft", "PageUp"].includes(event.key) ? -1 : 1)
-        location.hash = `#/doc/${doc.id}/${Math.max(0, Math.min(doc.pages - 1, next)) + 1}`
-      }
-    }
-    window.addEventListener("keydown", keydown)
-    return () => window.removeEventListener("keydown", keydown)
-  }, [doc, page, pdfView])
-  useEffect(
-    () => () => {
-      if (flashTimer.current) clearTimeout(flashTimer.current)
-    },
-    []
-  )
 
   const lookup = async (id: string, input: LookupInput) => {
     lookupRevision.current++
@@ -513,10 +392,11 @@ export function App() {
       )
       if (readRoute().docId === id) {
         setTab(input.kind === "word" ? "words" : "sentences")
-        if (mobile) setNotesOpen(true)
       }
+      return true
     } catch (error) {
       toast.error("조회하지 못했습니다", { description: errorText(error) })
+      return false
     } finally {
       lookupRevision.current++
     }
@@ -597,50 +477,6 @@ export function App() {
       )
     }
   }
-  const receiveRead = async (text: string, context: SpeechContext) => {
-    const match = await api<{
-      kind?: "word" | "sentence"
-      word_ids?: number[]
-      text?: string
-    }>(`/api/docs/${context.docId}/match`, {
-      method: "POST",
-      body: JSON.stringify({ page: context.page, transcript: text }),
-    })
-    const current = readRoute()
-    if (current.docId !== context.docId || current.page !== context.page) return
-    if (!match.kind || !match.word_ids?.length) {
-      toast("이 페이지에서 해당 표현을 찾지 못했어요", { description: text })
-      return
-    }
-    let ids = match.word_ids
-    if (
-      match.kind === "word" &&
-      ids.length === 1 &&
-      meta?.words[ids[0]]?.join != null
-    )
-      ids = [ids[0], meta.words[ids[0]].join!]
-    const selectedText =
-      match.kind === "sentence"
-        ? match.text || text
-        : ids.map((i) => meta?.words[i]?.t || "").join(" ") ||
-          match.text ||
-          text
-    setFlash({ docId: context.docId, page: context.page, ids })
-    if (flashTimer.current) clearTimeout(flashTimer.current)
-    flashTimer.current = setTimeout(() => setFlash(null), 1200)
-    await lookup(context.docId, {
-      page: context.page,
-      kind: match.kind,
-      text: selectedText,
-      word_ids: ids,
-    })
-  }
-  const speech = useSpeech({
-    context: doc ? { docId: doc.id, page, engine, stt: speechSettings } : null,
-    onRead: receiveRead,
-    onAudio: receiveAudio,
-    onError: (message) => toast.error(message),
-  })
   const copyPrompt = async (kind: "summary" | "questions") => {
     try {
       const result = await api<{ prompt: string }>(
@@ -728,7 +564,6 @@ export function App() {
         active.folderId === target.id ||
         (active.docId && ids.has(active.docId))
       ) {
-        setNotesOpen(false)
         setExportConfirm(false)
         location.hash = "#/"
       }
@@ -858,7 +693,6 @@ export function App() {
           current.filter((item) => item.docId !== target.id)
         )
         if (readRoute().docId === target.id) {
-          setNotesOpen(false)
           setExportConfirm(false)
           location.hash = target.folder_id
             ? `#/folder/${target.folder_id}`
@@ -1486,224 +1320,27 @@ export function App() {
           </div>
         </header>
         {route.docId ? (
-          <div className="flex min-h-0 flex-1 flex-col">
-            <div className="flex min-h-14 shrink-0 flex-wrap items-center gap-2 border-b bg-background/95 px-4 py-2">
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                aria-label="이전 페이지"
-                disabled={!doc || page <= 0}
-                onClick={() => {
-                  location.hash = `#/doc/${doc!.id}/${page}`
-                }}
-              >
-                <ChevronLeft />
-              </Button>
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <Input
-                  key={`${doc?.id}:${page}`}
-                  type="number"
-                  min={1}
-                  max={doc?.pages}
-                  defaultValue={page + 1}
-                  aria-label="페이지"
-                  className="h-7 w-14 text-center"
-                  onBlur={(e) => {
-                    if (doc)
-                      location.hash = `#/doc/${doc.id}/${Math.min(doc.pages, Math.max(1, Number(e.target.value) || 1))}`
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") e.currentTarget.blur()
-                  }}
-                />
-                <span>/ {doc?.pages ?? "—"}</span>
-              </div>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                aria-label="다음 페이지"
-                disabled={!doc || page >= doc.pages - 1}
-                onClick={() => {
-                  location.hash = `#/doc/${doc!.id}/${page + 2}`
-                }}
-              >
-                <ChevronRight />
-              </Button>
-              <span className="mx-1 h-5 w-px bg-border" />
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                aria-label="축소"
-                onClick={() => setZoom((z) => Math.max(0.4, (z || 1) / 1.15))}
-              >
-                <ZoomOut />
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="w-12 tabular-nums"
-                onClick={() => setZoom(0)}
-              >
-                {zoom ? `${Math.round(zoom * 100)}%` : "맞춤"}
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                aria-label="확대"
-                onClick={() => setZoom((z) => Math.min(4, (z || 1) * 1.15))}
-              >
-                <ZoomIn />
-              </Button>
-              <Select
-                value={pdfView}
-                onValueChange={(value) => {
-                  if (value !== "page" && value !== "continuous") return
-                  setPdfView(value)
-                  try {
-                    localStorage.setItem("yeonghan-pdf-view", value)
-                  } catch {
-                    /* 저장 없이도 보기 전환은 가능하다. */
-                  }
-                }}
-              >
-                <SelectTrigger
-                  size="sm"
-                  aria-label="PDF 보기 방식"
-                  className="w-32 text-xs"
-                >
-                  <SelectValue>
-                    {pdfView === "continuous" ? "연속 스크롤" : "한 페이지"}
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent alignItemWithTrigger={false}>
-                  <SelectItem value="page">한 페이지</SelectItem>
-                  <SelectItem value="continuous">연속 스크롤</SelectItem>
-                </SelectContent>
-              </Select>
-              <span className="mx-1 hidden h-5 w-px bg-border sm:block" />
-              <Button
-                variant={speech.mode === "read" ? "secondary" : "ghost"}
-                size="sm"
-                disabled={!doc || !meta || speech.starting}
-                onClick={speech.toggleRead}
-              >
-                {speech.mode === "read" ? (
-                  <Square className="text-destructive" />
-                ) : (
-                  <Volume2 />
-                )}
-                읽기
-              </Button>
-              <Button
-                variant={speech.mode === "ask" ? "destructive" : "ghost"}
-                size="sm"
-                disabled={!doc || speech.starting}
-                onClick={() => {
-                  if (!speech.mode && !speechSettings?.model) {
-                    openDownloads("speech")
-                    return
-                  }
-                  setTab("questions")
-                  speech.toggleAsk()
-                }}
-              >
-                {speech.mode === "ask" ? <Square /> : <Mic />}질문
-                {speech.mode === "ask" && (
-                  <span className="tabular-nums">
-                    {Math.floor(speech.elapsed / 60)}:
-                    {String(speech.elapsed % 60).padStart(2, "0")}
-                  </span>
-                )}
-              </Button>
-              <span
-                role="status"
-                className="min-w-0 flex-1 truncate text-xs text-muted-foreground"
-              >
-                {speech.starting ? "마이크 연결 중…" : speech.interim}
-              </span>
-              {mobile && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setNotesOpen(true)}
-                >
-                  <MessageSquare />
-                  메모
-                </Button>
-              )}
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={!doc || exporting}
-                onClick={() =>
-                  pendingCount ? setExportConfirm(true) : void exportPdf()
-                }
-              >
-                {exporting ? (
-                  <Loader2 className="animate-spin" />
-                ) : (
-                  <Download />
-                )}
-                <span className="hidden sm:inline">PDF 내보내기</span>
-              </Button>
-            </div>
-            {readerError ? (
-              <div className="m-auto max-w-sm space-y-4 p-8 text-center">
-                <p className="text-sm text-destructive">{readerError}</p>
-                <Button
-                  variant="outline"
-                  onClick={() => setReload((x) => x + 1)}
-                >
-                  <RefreshCw />
-                  다시 불러오기
-                </Button>
-              </div>
-            ) : !doc ? (
-              <div className="space-y-4 p-8">
-                <Skeleton className="h-6 w-40" />
-                <Skeleton className="h-96 w-full" />
-              </div>
-            ) : mobile ? (
-              <div className="min-h-0 flex-1">
-                <PdfViewer
-                  key={`${doc.id}:${reload}`}
-                  doc={doc}
-                  page={page}
-                  mode={pdfView}
-                  lookups={lookups}
-                  zoom={zoom}
-                  onLookup={(input) => void lookup(doc.id, input)}
-                  flashWordIds={flashWordIds}
-                  onPageChange={visiblePageChanged}
-                  onPageMeta={pageMetaLoaded}
-                />
-              </div>
-            ) : (
-              <ResizablePanelGroup
-                orientation="horizontal"
-                className="min-h-0 flex-1"
-              >
-                <ResizablePanel defaultSize="68%" minSize="40%">
-                  <PdfViewer
-                    key={`${doc.id}:${reload}`}
-                    doc={doc}
-                    page={page}
-                    mode={pdfView}
-                    lookups={lookups}
-                    zoom={zoom}
-                    onLookup={(input) => void lookup(doc.id, input)}
-                    flashWordIds={flashWordIds}
-                    onPageChange={visiblePageChanged}
-                    onPageMeta={pageMetaLoaded}
-                  />
-                </ResizablePanel>
-                <ResizableHandle withHandle />
-                <ResizablePanel defaultSize="32%" minSize="25%">
-                  {notes}
-                </ResizablePanel>
-              </ResizablePanelGroup>
-            )}
-          </div>
+          <Reader
+            key={route.docId}
+            doc={doc}
+            page={page}
+            reload={reload}
+            readerError={readerError}
+            lookups={lookups}
+            engine={engine}
+            speechSettings={speechSettings}
+            exporting={exporting}
+            notes={notes}
+            onReload={() => setReload((value) => value + 1)}
+            onExport={() =>
+              pendingCount ? setExportConfirm(true) : void exportPdf()
+            }
+            onTabChange={setTab}
+            onVisiblePageChange={visiblePageChanged}
+            onOpenSpeechSettings={() => openDownloads("speech")}
+            onLookup={lookup}
+            onAudio={receiveAudio}
+          />
         ) : route.view === "library" ? (
           <DocumentLibrary
             docs={filteredDocs}
@@ -1856,14 +1493,6 @@ export function App() {
         initialTab={downloadsTab}
         onSpeechSettingsChange={refreshSpeechSettings}
       />
-      <Sheet open={notesOpen && mobile && !!doc} onOpenChange={setNotesOpen}>
-        <SheetContent side="right" className="gap-0 p-0">
-          <SheetHeader className="border-b p-4">
-            <SheetTitle>교안 메모</SheetTitle>
-          </SheetHeader>
-          {notes}
-        </SheetContent>
-      </Sheet>
       <Dialog
         open={uploadOpen}
         onOpenChange={(open) => {
