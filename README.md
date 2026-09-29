@@ -14,7 +14,7 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 pnpm --dir web install --frozen-lockfile
 ```
-`run.sh`는 React 화면을 빌드한 뒤 FastAPI를 실행한다. 화면 개발 중에는 서버를 켜둔 상태에서 `pnpm --dir web dev`로 Vite 개발 서버(5173)를 사용할 수 있다.
+`run.sh`는 React 화면을 빌드한 뒤 FastAPI를 실행한다. 일반 실행에서는 코드 변경으로 서버가 재시작되지 않는다. 백엔드 개발 때만 `YH_DEV=1 ./run.sh`로 자동 재시작을 켠다. 화면 개발 중에는 서버를 켜둔 상태에서 `pnpm --dir web dev`로 Vite 개발 서버(5173)를 사용할 수 있다.
 화면 상단의 모델 버튼을 열어 **Codex (ChatGPT 구독)** / **로컬 (Mac GPU)** / **Claude Code (Claude 구독)** 모드와 모델을 고른다.
 - **Codex**: 설치된 Codex CLI의 ChatGPT 로그인을 사용한다(`codex login`). 기본 모델은 `gpt-6-sol`, 모델 목록은 로그인 계정에서 조회한다. API 키는 사용하지 않으며 구독 사용 한도가 적용된다.
 - **Claude Code**: `claude auth login`으로 구독 계정에 로그인한다. 모델과 추론 수준은 설치된 Claude CLI가 제공하는 목록을 사용한다.
@@ -51,7 +51,7 @@ pnpm --dir web install --frozen-lockfile
 - **드래그 앤 드롭**: PDF 파일을 메인 빈 곳에 놓으면 메인에, 폴더 카드나 사이드바 폴더에 놓으면 해당 폴더에 추가한다. 폴더 안의 빈 곳에 놓으면 현재 폴더에 추가한다. 여러 파일도 순서대로 처리한다. `교안 추가` 창에 놓으면 파일만 선택되며 `교안 열기`를 눌러 등록한다.
 - **폴더 삭제**: 메인과 사이드바의 폴더 `⋯` 메뉴에서 삭제한다. 확인 후 안의 모든 교안·번역·질문까지 함께 삭제한다.
 - **단어 클릭** → 빨간 밑줄 + 한국어 뜻. **드래그** → 문장 번역(오른쪽 패널). **Alt+클릭** → 그 단어가 든 문장 번역.
-- **PDF 보기 방식**: 상단에서 `한 페이지`와 `연속 스크롤`을 전환한다. 연속 보기에서는 스크롤한 위치에 맞춰 페이지 번호와 메모 패널이 바뀌며, 화면 주변 페이지만 불러온다. 선택한 보기 방식은 브라우저에 저장한다.
+- **PDF 보기 방식**: 상단에서 `한 페이지`와 `연속 스크롤`을 전환한다. 연속 보기에서는 TanStack Virtual이 화면 주변 페이지만 표시하며, 스크롤한 위치에 맞춰 페이지 번호와 메모 패널이 바뀐다. 선택한 보기 방식은 브라우저에 저장한다.
 - **🎤 읽기**: 영어로 단어나 문장을 소리 내어 읽으면 현재 페이지에서 찾아 같은 처리. (Chrome)
 - **🎤 질문**: 누르고 한국어로 말한 뒤 다시 누르면 받아쓰기 → 용어·수식 정리 → 질문 목록. **전체 복사**는 질문들을 프롬프트 형태로 복사.
 - **탭용 PDF 내보내기**: 밑줄·뜻·문장 번역이 박힌 PDF를 `data/exports/`에 저장.
@@ -132,6 +132,8 @@ backend/match.py   음성 인식 결과 ↔ 페이지 단어/문장 매칭
 backend/anki.py    genanki 덱 생성
 backend/db.py      SQLite (data/yh.sqlite)
 web/src/           React 화면·PDF 오버레이·녹음 hook
+web/src/components/Reader.tsx  리더 도구 모음·확대·보기 방식·음성 상태
+web/src/components/PdfViewer.tsx  TanStack Virtual 페이지 가상화·메타 로딩
 web/src/components/ui/  shadcn 공식 CLI 생성 컴포넌트
 web/dist/          Vite 빌드 결과 (FastAPI가 제공, git 제외)
 prompts/           요약·예습질문 프롬프트 템플릿 (홈 복사 버튼이 읽음)
