@@ -119,14 +119,33 @@ def render_page(path: str, pno: int, scale: float = 2.0) -> bytes:
 def page_count(path: str) -> int:
     return len(fitz.open(path))
 
+def page_sizes(path: str) -> list[dict]:
+    with fitz.open(path) as document:
+        return [{"w": page.rect.width, "h": page.rect.height} for page in document]
+
 RED = (0.85, 0.1, 0.1)
+
+def _annotation_layout(meta: dict, row: list[dict]) -> dict:
+    """화면과 같은 PDF 좌표: 밑줄 아래 3pt 간격, 첫 물리 줄의 중앙."""
+    left, right = min(w["x0"] for w in row), max(w["x1"] for w in row)
+    y0, y1 = min(w["y0"] for w in row), max(w["y1"] for w in row)
+    gap = min(meta["h"] - y1 - 2, *(w.get("gap", 99) for w in row))
+    size = max(4.5, min(7.5, (y1 - y0) * 0.5))
+    fitted = min(size, (gap - 4.5) / 1.25)
+    if fitted >= 4.5:
+        return dict(mode="below", center=(left + right) / 2, top=y1 + 3.5, size=fitted)
+    if meta["w"] - meta.get("right", meta["w"]) >= 40:
+        return dict(mode="margin", center=0, top=y1 - 7, size=6)
+    previous_bottom = max([2, *(w["y1"] for w in meta["words"]
+                                if w["y0"] < y0 - 1 and w["x1"] > left and w["x0"] < right)])
+    top = y0 - 2.5 - size * 1.25
+    return dict(mode="above" if top >= previous_bottom + 1 else "note", center=(left + right) / 2, top=top, size=size)
 
 def export(path: str, out: str, word_ann: list[dict], sent_ann: list[dict], pages_meta: dict[int, dict]):
     """word_ann: {page, word_ids, meaning}; sent_ann: {page, english, korean, note}.
     문장 번역이 있는 페이지는 아래로 늘려서 블록을 쓴다."""
     src = fitz.open(path)
     dst = fitz.open()
-    font = korean_font()
     by_page_w: dict[int, list] = {}
     by_page_s: dict[int, list] = {}
     for a in word_ann: by_page_w.setdefault(a["page"], []).append(a)
@@ -134,6 +153,15 @@ def export(path: str, out: str, word_ann: list[dict], sent_ann: list[dict], page
     for pno in range(len(src)):
         sp = src[pno]; W, H = sp.rect.width, sp.rect.height
         notes = by_page_s.get(pno, [])
+        meta = pages_meta.get(pno)
+        word_labels = []
+        for annotation in by_page_w.get(pno, []):
+            if not meta: continue
+            words = [meta["words"][i] for i in annotation["word_ids"] if 0 <= i < len(meta["words"])]
+            if not words: continue
+            first = min(words, key=lambda word: (word["y0"], word["x0"]))
+            row = [word for word in words if (word["b"], word["l"]) == (first["b"], first["l"])]
+            word_labels.append((annotation, words, _annotation_layout(meta, row)))
         fs = 9
         # 문장 블록: 그릴 문단을 먼저 만들고, 같은 줄바꿈 함수로 높이를 정확히 잰다
         paras: list[tuple[str, float, tuple]] = []
@@ -143,66 +171,66 @@ def export(path: str, out: str, word_ann: list[dict], sent_ann: list[dict], page
             if n.get("note"):
                 paras.append(("  ※ " + n["note"], fs - 1, (0.4, 0.4, 0.4)))
             paras.append(("", 4, None))                     # 문단 사이 4pt
+        # 본문 사방이 빽빽하면 뜻을 겹쳐 그리지 않고 페이지 아래에 보존한다.
+        for annotation, words, layout in word_labels:
+            if layout["mode"] == "note":
+                paras.append((f"{annotation.get('text') or words[0]['t']}: {annotation['meaning']}", fs, RED))
         extra = 0
-        if notes:
-            extra = 12 + sum(len(_wrap(t, W - 40, sz, font)) * sz * 1.45 if col else sz for t, sz, col in paras) + 14
+        if paras:
+            extra = 12 + sum(len(_wrap(t, W - 40, sz)) * sz * 1.45 if col else sz for t, sz, col in paras) + 14
         np_ = dst.new_page(width=W, height=H + extra)
         np_.show_pdf_page(fitz.Rect(0, 0, W, H), src, pno)
-        meta = pages_meta.get(pno)
         margin_notes: dict[float, list[str]] = {}   # y → ["word 뜻", ...]
         margin_x = (meta.get("right", W) + 6) if meta else W
-        margin_ok = meta is not None and (W - margin_x) >= 40
-        for a in by_page_w.get(pno, []):
-            if not meta: continue
-            ws = [meta["words"][i] for i in a["word_ids"] if i < len(meta["words"])]
-            if not ws: continue
+        for a, ws, layout in word_labels:
             rows: dict[float, list] = {}
             for w in ws: rows.setdefault(round(w["y1"], 0), []).append(w)
             for _, r in rows.items():
                 yy = max(w["y1"] for w in r) + 0.5
                 np_.draw_line((min(w["x0"] for w in r), yy), (max(w["x1"] for w in r), yy), color=RED, width=0.8)
-            first = min(ws, key=lambda w: (w["y0"], w["x0"]))
-            x0, y0, y1 = first["x0"], first["y0"], first["y1"]
-            gap = min(w.get("gap", 99) for w in ws)
-            if gap < 4.0 and margin_ok:
-                margin_notes.setdefault(round(y1, 0), []).append(f"{a.get('text') or ws[0]['t'].strip('-,.;:()')} {a['meaning']}")
-            else:
-                size = max(4.5, min(7.5, (y1 - y0) * 0.55, (gap - 1.0) * 0.9))
-                _text(np_, (x0, y1 + size + 0.6), a["meaning"], size, font)
+            if layout["mode"] == "margin":
+                margin_notes.setdefault(layout["top"], []).append(f"{a.get('text') or ws[0]['t'].strip('-,.;:()')} {a['meaning']}")
+            elif layout["mode"] != "note":
+                size = layout["size"]
+                width = _measure(a["meaning"], size)
+                if width > W - 4:
+                    size *= (W - 4) / width
+                    width = W - 4
+                x = max(2, min(W - width - 2, layout["center"] - width / 2))
+                _text(np_, (x, layout["top"] + font_obj().ascender * size), a["meaning"], size)
         for yb, items in sorted(margin_notes.items()):
-            _text(np_, (margin_x, yb - 1), " · ".join(items), 6.0, font)
-        if notes:
+            text = " · ".join(items)
+            size = min(6.0, (W - margin_x - 2) / max(_measure(text, 1), 1))
+            _text(np_, (margin_x, yb + font_obj().ascender * size), text, size)
+        if paras:
             y = H + 12
             np_.draw_rect(fitz.Rect(0, H, W, H + extra), color=None, fill=(1, 0.97, 0.95))
             for t, sz, col in paras:
                 if col is None: y += sz; continue
-                y = _para(np_, 20, y, W - 40, t, sz, font, col)
+                y = _para(np_, 20, y, W - 40, t, sz, col)
     dst.save(out, garbage=3, deflate=True)
     dst.close(); src.close()
 
-def _text(page, pt, s, size, font, color=RED):
+def _text(page, pt, s, size, color=RED):
     tw = fitz.TextWriter(page.rect)
     tw.append(pt, s, font=font_obj(), fontsize=size)
     tw.write_text(page, color=color)
 
-def _measure(s, size, font):
+def _measure(s, size):
     return font_obj().text_length(s, fontsize=size)
 
-def _wrap(s, width, size, font):
+def _wrap(s, width, size):
     words, lines, cur = s.split(" "), [], ""
     for w in words:
         t = (cur + " " + w).strip()
-        if _measure(t, size, font) > width and cur:
+        if _measure(t, size) > width and cur:
             lines.append(cur); cur = w
         else: cur = t
     if cur: lines.append(cur)
     return lines or [""]
 
-def _wrap_count(s, width, size, font):
-    return max(0, len(_wrap(s, width, size, font)) - 1)
-
-def _para(page, x, y, width, s, size, font, color):
-    for line in _wrap(s, width, size, font):
-        _text(page, (x, y + size), line, size, font, color)
+def _para(page, x, y, width, s, size, color):
+    for line in _wrap(s, width, size):
+        _text(page, (x, y + size), line, size, color)
         y += size * 1.45
     return y
