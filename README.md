@@ -15,6 +15,16 @@ python3 -m pip install -r requirements.txt
 번역은 `claude -p`(Claude Code 헤드리스, 구독 사용)로 한다. API 키 불필요. 단어·문장 번역 모델은 `YH_MODEL`(기본 haiku), 질문 교정 모델은 `YH_FIX_MODEL`(기본 sonnet).
 질문 받아쓰기는 로컬 Whisper(`faster-whisper`). 모델은 `data/models/faster-whisper-large-v3-turbo/`에 있어야 한다. 없으면 `./scripts/download-whisper.sh`로 받는다(1.6GB, Hugging Face 자동 다운로드는 자주 멈춰서 미러 이어받기 스크립트를 쓴다). 🎤 읽기는 Chrome 내장 인식 그대로.
 
+## 사용법
+- **교안 열기**: 홈에서 PDF 선택, 과목명 입력.
+- **단어 클릭** → 빨간 밑줄 + 한국어 뜻. **드래그** → 문장 번역(오른쪽 패널). **Alt+클릭** → 그 단어가 든 문장 번역.
+- **🎤 읽기**: 영어로 단어나 문장을 소리 내어 읽으면 현재 페이지에서 찾아 같은 처리. (Chrome)
+- **🎤 질문**: 누르고 한국어로 말한 뒤 다시 누르면 받아쓰기 → 용어·수식 정리 → 질문 목록. **전체 복사**는 질문들을 프롬프트 형태로 복사.
+- **탭용 PDF 내보내기**: 밑줄·뜻·문장 번역이 박힌 PDF를 `data/exports/`에 저장.
+- **Anki 덱 만들기**(홈): 조회한 단어를 과목별 `.apkg`로.
+- **요약 프롬프트 복사**(홈): `prompts/요약-프롬프트.md`를 클립보드로.
+- 확대·축소 ⌘+ / ⌘− / ⌘0, 페이지 이동 ← →.
+
 ## 기술 스택
 
 | 분류 | 기술 | 버전 | 역할 |
