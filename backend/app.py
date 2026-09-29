@@ -1,5 +1,6 @@
 from __future__ import annotations
-import asyncio, json, os, re, shutil, sqlite3, tempfile, threading, uuid
+import asyncio, json, math, os, re, shutil, sqlite3, tempfile, threading, uuid
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
@@ -20,7 +21,7 @@ db.init()
 
 app = FastAPI(title="영한번역")
 pool = ThreadPoolExecutor(max_workers=3)
-_meta_cache: dict[str, dict] = {}
+_meta_cache: OrderedDict[str, dict] = OrderedDict()
 # ponytail: 로컬 파일 작업을 직렬화한다. 여러 교안을 동시에 렌더링해야 하면 문서별 잠금으로 바꾼다.
 _doc_files_lock = threading.RLock()
 
@@ -179,6 +180,25 @@ def clear_stt_download(body: DownloadIn):
     return _speech_action(speech_models.clear_download, body.model)
 
 # ---------- 페이지 메타 ----------
+def _valid_meta(meta) -> bool:
+    def number(value):
+        return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+    try:
+        return (isinstance(meta, dict) and meta.get("_cache_version") == pdfx.META_VERSION
+                and all(number(meta[key]) and meta[key] > 0 for key in ("w", "h"))
+                and isinstance(meta["text"], str) and isinstance(meta["words"], list)
+                and isinstance(meta["sentences"], list) and number(meta["right"])
+                and all(word["i"] == index and isinstance(word["t"], str)
+                        and all(number(word[key]) for key in ("x0", "y0", "x1", "y1", "gap"))
+                        and all(isinstance(word[key], int) for key in ("b", "l"))
+                        for index, word in enumerate(meta["words"]))
+                and all(sentence["i"] == index and isinstance(sentence["t"], str)
+                        and isinstance(sentence["w"], list)
+                        and all(isinstance(id, int) and 0 <= id < len(meta["words"]) for id in sentence["w"])
+                        for index, sentence in enumerate(meta["sentences"])))
+    except (KeyError, TypeError, AttributeError):
+        return False
+
 def page_meta(doc_id: str, pno: int) -> dict:
     with _doc_files_lock:
         d = get_doc(doc_id)
@@ -186,13 +206,25 @@ def page_meta(doc_id: str, pno: int) -> dict:
         key = f"{doc_id}:{pno}"
         if key not in _meta_cache:
             cache = os.path.join(DOCS, f"{doc_id}.p{pno}.json")
-            if os.path.exists(cache):
-                with open(cache, encoding="utf-8") as f: _meta_cache[key] = json.load(f)
-            else:
-                with fitz.open(d["path"]) as f:
-                    m = pdfx.extract_page(f[pno])
-                with open(cache, "w", encoding="utf-8") as f: json.dump(m, f, ensure_ascii=False)
-                _meta_cache[key] = m
+            try:
+                with open(cache, encoding="utf-8") as f: meta = json.load(f)
+            except (OSError, ValueError):
+                meta = None
+            if not _valid_meta(meta):
+                meta = pdfx.page_metadata(d["path"], pno)
+                meta["_cache_version"] = pdfx.META_VERSION
+                with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=DOCS, delete=False) as f:
+                    temporary = f.name
+                    try: json.dump(meta, f, ensure_ascii=False)
+                    except BaseException:
+                        f.close(); os.remove(temporary)
+                        raise
+                try: os.replace(temporary, cache)
+                finally:
+                    if os.path.exists(temporary): os.remove(temporary)
+            _meta_cache[key] = meta
+            if len(_meta_cache) > 128: _meta_cache.popitem(last=False)
+        _meta_cache.move_to_end(key)
         return _meta_cache[key]
 
 # ---------- 큐 ----------
