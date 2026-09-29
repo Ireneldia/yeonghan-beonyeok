@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from typing import Literal
 import fitz
 
-import db, llm, pdfx, match as matcher, anki, stt
+import db, llm, pdfx, match as matcher, anki, stt, local_models
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.environ.get("YH_DATA_DIR") or os.path.join(ROOT, "data"); DOCS = os.path.join(DATA, "docs"); EXPORTS = os.path.join(DATA, "exports")
@@ -53,6 +53,75 @@ def set_llm_settings(body: LLMSettings):
 @app.get("/api/llm/models")
 def get_llm_models():
     return llm.models()
+
+@app.get("/api/llm/local/search")
+def search_local_models(q: str = ""):
+    try:
+        return llm.fit_catalog(local_models.search(q), families=True)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except RuntimeError as e:
+        raise HTTPException(502, str(e))
+
+@app.get("/api/llm/local/tags")
+def local_model_tags(model: str):
+    try:
+        return llm.fit_catalog(local_models.tags(model))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except RuntimeError as e:
+        raise HTTPException(502, str(e))
+
+class DownloadIn(BaseModel):
+    model: str
+
+@app.post("/api/llm/local/download")
+def download_local_model(body: DownloadIn):
+    try:
+        return local_models.start_download(body.model)
+    except local_models.DownloadBusy as e:
+        raise HTTPException(409, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+@app.get("/api/llm/local/download")
+def local_download_status():
+    return local_models.download_status()
+
+@app.delete("/api/llm/local/download")
+def clear_local_download(body: DownloadIn):
+    try:
+        return local_models.clear_download(body.model)
+    except local_models.DownloadBusy as e:
+        raise HTTPException(409, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+@app.get("/api/llm/local/installed")
+def installed_local_models():
+    try:
+        result = llm.fit_catalog(local_models.installed())
+        for model in result["models"]:
+            if model.get("cloud"):
+                model["fit"].update(level="unknown", label="클라우드 모델", required_bytes=None,
+                                    note="로컬 가중치가 없는 클라우드 연결 항목입니다")
+        return result
+    except RuntimeError as e:
+        raise HTTPException(503, str(e))
+
+@app.delete("/api/llm/local/installed")
+def delete_local_model(body: DownloadIn):
+    try:
+        local_models.delete_installed(body.model)
+        return {"ok": True}
+    except local_models.DownloadBusy as e:
+        raise HTTPException(409, str(e))
+    except LookupError as e:
+        raise HTTPException(404, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except RuntimeError as e:
+        raise HTTPException(503, str(e))
 
 # ---------- 페이지 메타 ----------
 def page_meta(doc_id: str, pno: int) -> dict:
