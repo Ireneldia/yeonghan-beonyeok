@@ -1,6 +1,6 @@
 {
   "version": "0.0.1",
   "configurations": [
-    { "name": "yh", "runtimeExecutable": "python3", "runtimeArgs": ["-m", "uvicorn", "app:app", "--host", "127.0.0.1", "--port", "8766", "--app-dir", "backend", "--reload", "--reload-dir", "backend"], "port": 8766 }
+    { "name": "yh", "runtimeExecutable": "./run.sh", "runtimeArgs": [], "port": 8766 }
   ]
 }

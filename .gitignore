@@ -1,4 +1,6 @@
 data/
+.venv/
+.playwright-mcp/
 __pycache__/
 .DS_Store
 교안 샘플/
