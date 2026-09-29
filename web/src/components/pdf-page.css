@@ -58,13 +58,19 @@
   min-width: 0;
   min-height: 0;
 }
+.pdf-viewer-page.is-embedded {
+  display: block;
+  height: auto;
+}
 .pdf-canvas.is-embedded {
+  display: flow-root;
   flex: none;
+  height: auto;
   overflow: visible;
   padding: 0;
   background: transparent;
 }
-.pdf-canvas.is-embedded .pdf-sheet { height: 100%; box-shadow: none; }
+.pdf-canvas.is-embedded .pdf-sheet { box-shadow: none; }
 .pdf-canvas.is-embedded .pdf-sheet[data-loading] { min-height: 0; }
 .pdf-canvas.is-embedded .pdf-word { touch-action: pan-y; }
 .pdf-continuous {
@@ -104,4 +110,13 @@
   color: #64748b;
   font-size: 13px;
   text-align: center;
+}
+.pdf-word-notes {
+  margin: 12px auto 0;
+  padding: 12px 16px;
+  border: 1px solid #fecaca;
+  border-radius: 4px;
+  background: #fff7f3;
+  color: #b91c1c;
+  overflow-wrap: anywhere;
 }

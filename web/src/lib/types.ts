@@ -71,6 +71,7 @@ export type Word = {
   y0: number
   x1: number
   y1: number
+  ink?: { x0: number; y0: number; x1: number; y1: number }
   b: number
   l: number
   s?: number

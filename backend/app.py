@@ -212,6 +212,9 @@ def _valid_meta(meta) -> bool:
                 and isinstance(meta["sentences"], list) and number(meta["right"])
                 and all(word["i"] == index and isinstance(word["t"], str)
                         and all(number(word[key]) for key in ("x0", "y0", "x1", "y1", "gap"))
+                        and isinstance(word["ink"], dict)
+                        and all(number(word["ink"][key]) for key in ("x0", "y0", "x1", "y1"))
+                        and word["ink"]["x1"] > word["ink"]["x0"] and word["ink"]["y1"] > word["ink"]["y0"]
                         and all(isinstance(word[key], int) for key in ("b", "l"))
                         for index, word in enumerate(meta["words"]))
                 and all(sentence["i"] == index and isinstance(sentence["t"], str)

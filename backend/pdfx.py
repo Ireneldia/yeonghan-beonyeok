@@ -3,7 +3,7 @@ from __future__ import annotations
 import glob, math, os, re
 import fitz
 
-META_VERSION = 2
+META_VERSION = 3
 _FONT = None
 _FONTOBJ = None
 def korean_font() -> str | None:
@@ -103,15 +103,31 @@ def extract_page(page: fitz.Page) -> dict:
             last, first = words[ordered[k][-1]], words[ordered[k + 1][0]]
             if last["t"].endswith("-") and len(last["t"]) > 1 and first["t"][:1].islower():
                 last["join"] = first["i"]
-    # 읽기 순서·문장·join은 원래 좌표로 확정한다. ID를 유지하고 표시 좌표만 회전한다.
-    if page.rotation:
-        for w in words:
-            box = fitz.Rect(w["x0"], w["y0"], w["x1"], w["y1"]) * page.rotation_matrix
-            w.update(x0=box.x0, y0=box.y0, x1=box.x1, y1=box.y1)
-    # 각 단어의 아래 여유 공간(다음 줄까지 거리) — 뜻 글자 크기 결정용
+    # 선택 영역·읽기 순서는 유지하고 주석에만 보수적인 글자 그리기 경계를 사용한다.
+    # bboxlog는 단어보다 큰 text paint operation 단위이므로 교차 영역만 합친다.
+    painted = []
+    for kind, bounds, *_ in page.get_bboxlog():
+        if kind not in ("fill-text", "stroke-text"): continue
+        box = fitz.Rect(bounds)
+        if not box.is_empty and all(math.isfinite(value) for value in box): painted.append(box)
+    for word in words:
+        box = fitz.Rect(word["x0"], word["y0"], word["x1"], word["y1"])
+        hits = [box & paint for paint in painted if box.intersects(paint)]
+        ink = fitz.Rect(hits[0]) if hits else fitz.Rect(box)
+        for hit in hits[1:]: ink |= hit
+        if ink.is_empty or not all(math.isfinite(value) for value in ink): ink = fitz.Rect(box)
+        if page.rotation:
+            box *= page.rotation_matrix
+            ink *= page.rotation_matrix
+        word.update(x0=box.x0, y0=box.y0, x1=box.x1, y1=box.y1,
+                    ink=dict(x0=ink.x0, y0=ink.y0, x1=ink.x1, y1=ink.y1))
+    # 뜻풀이 여유는 선택용 폰트 line box가 아닌 글자 그리기 영역 사이에서 잰다.
     for w in words:
-        below = [w2["y0"] for w2 in words if w2["y0"] > w["y1"] - 1 and w2["x1"] > w["x0"] - 2 and w2["x0"] < w["x1"] + 2]
-        w["gap"] = round(min(below) - w["y1"], 1) if below else 99
+        ink = w["ink"]
+        below = [other["ink"]["y0"] for other in words if other is not w
+                 and other["ink"]["y0"] > ink["y1"] - 1
+                 and other["ink"]["x1"] > ink["x0"] - 2 and other["ink"]["x0"] < ink["x1"] + 2]
+        w["gap"] = round(min(below) - ink["y1"], 3) if below else 99
     right = max((w["x1"] for w in words), default=page.rect.width)
     return {"words": words, "sentences": sentences, "text": page.get_text(),
             "w": page.rect.width, "h": page.rect.height, "right": right}
@@ -147,20 +163,14 @@ def document_terms(path: str) -> list[str]:
 RED = (0.85, 0.1, 0.1)
 
 def _annotation_layout(meta: dict, row: list[dict]) -> dict:
-    """화면과 같은 PDF 좌표: 밑줄 아래 3pt 간격, 첫 물리 줄의 중앙."""
-    left, right = min(w["x0"] for w in row), max(w["x1"] for w in row)
-    y0, y1 = min(w["y0"] for w in row), max(w["y1"] for w in row)
-    gap = min(meta["h"] - y1 - 2, *(w.get("gap", 99) for w in row))
-    size = max(4.5, min(7.5, (y1 - y0) * 0.5))
-    fitted = min(size, (gap - 4.5) / 1.25)
-    if fitted >= 4.5:
-        return dict(mode="below", center=(left + right) / 2, top=y1 + 3.5, size=fitted)
-    if meta["w"] - meta.get("right", meta["w"]) >= 40:
-        return dict(mode="margin", center=0, top=y1 - 7, size=6)
-    previous_bottom = max([2, *(w["y1"] for w in meta["words"]
-                                if w["y0"] < y0 - 1 and w["x1"] > left and w["x0"] < right)])
-    top = y0 - 2.5 - size * 1.25
-    return dict(mode="above" if top >= previous_bottom + 1 else "note", center=(left + right) / 2, top=top, size=size)
+    """확대율과 무관한 PDF 단위. 단어 아래에 두고 공간이 부족하면 하단 설명에 보존한다."""
+    boxes = [word.get("ink", word) for word in row]
+    left, right = min(box["x0"] for box in boxes), max(box["x1"] for box in boxes)
+    y0, y1 = min(box["y0"] for box in boxes), max(box["y1"] for box in boxes)
+    gap = min(meta["h"] - y1, *(word.get("gap", 99) for word in row))
+    size = min(7.5, (gap - 2) / 1.1, (y1 - y0) * 0.5)
+    return dict(mode="below" if size >= 4.5 else "note", center=(left + right) / 2,
+                top=y1 + 1.5, size=size)
 
 def export(path: str, out: str, word_ann: list[dict], sent_ann: list[dict], pages_meta: dict[int, dict]):
     """word_ann: {page, word_ids, meaning}; sent_ann: {page, english, korean, note}.
@@ -203,17 +213,15 @@ def export(path: str, out: str, word_ann: list[dict], sent_ann: list[dict], page
             sp.set_rotation(0)  # 메모리 사본만 변경하며 원본 파일은 저장하지 않는다.
             if sp.get_contents():
                 np_.show_pdf_page(fitz.Rect(0, 0, W, H), src, pno, rotate=-rotation)
-            margin_notes: dict[float, list[str]] = {}   # y → ["word 뜻", ...]
-            margin_x = (meta.get("right", W) + 6) if meta else W
             for a, ws, layout in word_labels:
                 rows: dict[float, list] = {}
-                for w in ws: rows.setdefault(round(w["y1"], 0), []).append(w)
+                for w in ws:
+                    ink = w.get("ink", w)
+                    rows.setdefault(round(ink["y1"], 0), []).append(ink)
                 for _, r in rows.items():
                     yy = max(w["y1"] for w in r) + 0.5
                     np_.draw_line((min(w["x0"] for w in r), yy), (max(w["x1"] for w in r), yy), color=RED, width=0.8)
-                if layout["mode"] == "margin":
-                    margin_notes.setdefault(layout["top"], []).append(f"{a.get('text') or ws[0]['t'].strip('-,.;:()')} {a['meaning']}")
-                elif layout["mode"] != "note":
+                if layout["mode"] == "below":
                     size = layout["size"]
                     width = _measure(a["meaning"], size)
                     if width > W - 4:
@@ -221,10 +229,6 @@ def export(path: str, out: str, word_ann: list[dict], sent_ann: list[dict], page
                         width = W - 4
                     x = max(2, min(W - width - 2, layout["center"] - width / 2))
                     _text(np_, (x, layout["top"] + font_obj().ascender * size), a["meaning"], size)
-            for yb, items in sorted(margin_notes.items()):
-                text = " · ".join(items)
-                size = min(6.0, (W - margin_x - 2) / max(_measure(text, 1), 1))
-                _text(np_, (margin_x, yb + font_obj().ascender * size), text, size)
             if paras:
                 y = H + 12
                 np_.draw_rect(fitz.Rect(0, H, W, H + extra), color=None, fill=(1, 0.97, 0.95))

@@ -37,40 +37,23 @@ function rasterScale(meta: PageMeta | null, width: number, pixelRatio: number) {
   return [1, 1.5, 2, 3, 4].find((scale) => scale >= desired) ?? 4
 }
 
-function annotationLayout(meta: PageMeta, row: Word[], sy = 1) {
-  const left = Math.min(...row.map((word) => word.x0)),
-    right = Math.max(...row.map((word) => word.x1))
-  const y0 = Math.min(...row.map((word) => word.y0)),
-    y1 = Math.max(...row.map((word) => word.y1))
-  const gap = Math.min(meta.h - y1 - 2, ...row.map((word) => word.gap ?? 99))
-  const minimum = 7 / sy
-  const size = Math.max(minimum, Math.min(13 / sy, (y1 - y0) * 0.5))
-  const fitted = Math.min(size, (gap - 4.5) / 1.25)
-  if (fitted >= minimum)
-    return {
-      mode: "below",
-      center: (left + right) / 2,
-      top: y1 + 3.5,
-      size: fitted,
-    }
-  if (meta.w - (meta.right ?? meta.w) >= 40)
-    return {
-      mode: "margin",
-      center: 0,
-      top: y1 - 7,
-      size: Math.max(8 / sy, 6.5),
-    }
-  const previousBottom = Math.max(
-    2,
-    ...meta.words
-      .filter((word) => word.y0 < y0 - 1 && word.x1 > left && word.x0 < right)
-      .map((word) => word.y1)
-  )
-  const top = y0 - 2.5 - size * 1.25
+function inkBox(word: Word) {
+  return word.ink ?? word
+}
+
+function annotationLayout(meta: PageMeta, row: Word[]) {
+  const boxes = row.map(inkBox)
+  const left = Math.min(...boxes.map((box) => box.x0)),
+    right = Math.max(...boxes.map((box) => box.x1))
+  const y0 = Math.min(...boxes.map((box) => box.y0)),
+    y1 = Math.max(...boxes.map((box) => box.y1))
+  const gap = Math.min(meta.h - y1, ...row.map((word) => word.gap ?? 99))
+  // Use PDF units so zoom changes size, never the annotation's placement policy.
+  const size = Math.min(7.5, (y1 - y0) * 0.5, (gap - 2) / 1.1)
   return {
-    mode: top >= previousBottom + 1 ? "above" : "note",
+    mode: size >= 4.5 ? "below" : "note",
     center: (left + right) / 2,
-    top,
+    top: y1 + 1.5,
     size,
   }
 }
@@ -335,13 +318,13 @@ export const PdfPage = memo(function PdfPage({
 
   const sx = meta ? imageSize.width / meta.w : 0,
     sy = meta ? imageSize.height / meta.h : 0
-  const { pending, sentences, errors, lines, labels } = useMemo(() => {
+  const { pending, sentences, errors, lines, labels, notes } = useMemo(() => {
     const pending = new Set<number>(),
       sentences = new Set<number>(),
       errors = new Set<number>()
     const lines: { key: string; style: CSSProperties }[] = [],
       labels: Label[] = []
-    const marginRows = new Map<number, Label>()
+    const notes: { id: number; text: string; meaning: string }[] = []
     for (const lookup of lookups.filter(
       (item) => item.doc_id === doc.id && item.page === page
     )) {
@@ -351,7 +334,6 @@ export const PdfPage = memo(function PdfPage({
         else if (lookup.kind === "sentence") sentences.add(id)
       }
       if (
-        !ready ||
         !meta ||
         lookup.kind !== "word" ||
         lookup.status !== "done" ||
@@ -362,51 +344,41 @@ export const PdfPage = memo(function PdfPage({
         .map((id) => meta.words[id])
         .filter((word): word is Word => !!word)
       if (!words.length) continue
-      const rows = new Map<number, Word[]>()
-      for (const word of words) {
-        const y = Math.round(word.y1)
-        rows.set(y, [...(rows.get(y) || []), word])
-      }
-      for (const [y, row] of rows) {
-        const left = Math.min(...row.map((word) => word.x0)),
-          right = Math.max(...row.map((word) => word.x1))
-        lines.push({
-          key: `${lookup.id}:${y}`,
-          style: {
-            left: left * sx,
-            top: (Math.max(...row.map((word) => word.y1)) + 0.5) * sy,
-            width: (right - left) * sx,
-          },
-        })
-      }
       const first = words.reduce((a, b) =>
-        b.y0 < a.y0 || (b.y0 === a.y0 && b.x0 < a.x0) ? b : a
+        inkBox(b).y0 < inkBox(a).y0 ||
+        (inkBox(b).y0 === inkBox(a).y0 && inkBox(b).x0 < inkBox(a).x0)
+          ? b
+          : a
       )
       const row = words.filter(
         (word) => word.b === first.b && word.l === first.l
       )
-      const layout = annotationLayout(meta, row, sy),
-        right = meta.right ?? meta.w
-      if (layout.mode === "margin") {
-        const y = Math.round(first.y1),
-          text = `${lookup.text} ${lookup.result.meaning}`,
-          previous = marginRows.get(y)
-        if (previous) previous.text += ` · ${text}`
-        else {
-          const label = {
-            key: `margin:${y}`,
-            text,
-            style: {
-              left: (right + 6) * sx,
-              top: layout.top * sy,
-              fontSize: layout.size * sy,
-              maxWidth: Math.max(0, meta.w - right - 8) * sx,
-            },
-          }
-          marginRows.set(y, label)
-          labels.push(label)
-        }
-      } else if (layout.mode !== "note")
+      const layout = annotationLayout(meta, row)
+      if (layout.mode === "note")
+        notes.push({
+          id: lookup.id,
+          text: lookup.text,
+          meaning: lookup.result.meaning,
+        })
+      if (!ready) continue
+      const rows = new Map<number, Word[]>()
+      for (const word of words) {
+        const y = Math.round(inkBox(word).y1)
+        rows.set(y, [...(rows.get(y) || []), word])
+      }
+      for (const [y, row] of rows) {
+        const left = Math.min(...row.map((word) => inkBox(word).x0)),
+          right = Math.max(...row.map((word) => inkBox(word).x1))
+        lines.push({
+          key: `${lookup.id}:${y}`,
+          style: {
+            left: left * sx,
+            top: (Math.max(...row.map((word) => inkBox(word).y1)) + 0.5) * sy,
+            width: (right - left) * sx,
+          },
+        })
+      }
+      if (layout.mode === "below")
         labels.push({
           key: `word:${lookup.id}`,
           text: lookup.result.meaning,
@@ -415,13 +387,14 @@ export const PdfPage = memo(function PdfPage({
             left: layout.center * sx,
             top: layout.top * sy,
             fontSize: layout.size * sy,
+            lineHeight: 1.1,
             maxWidth: Math.max(0, meta.w - 4) * sx,
             transform: "translateX(-50%)",
           },
         })
     }
 
-    return { pending, sentences, errors, lines, labels }
+    return { pending, sentences, errors, lines, labels, notes }
   }, [lookups, doc.id, page, ready, meta, sx, sy])
   const selected = new Set(
     selection?.context === context && selection.source === source
@@ -446,7 +419,7 @@ export const PdfPage = memo(function PdfPage({
             : canvasWidth
               ? canvasWidth * (zoom || 1)
               : "100%",
-          aspectRatio: !ready && meta ? `${meta.w} / ${meta.h}` : undefined,
+          aspectRatio: meta ? `${meta.w} / ${meta.h}` : undefined,
         }}
       >
         <img
@@ -532,6 +505,29 @@ export const PdfPage = memo(function PdfPage({
           </div>
         )}
       </div>
+      {notes.length > 0 && (
+        <aside
+          className="pdf-word-notes"
+          aria-label="단어 뜻"
+          style={{
+            width: embedded
+              ? "100%"
+              : canvasWidth
+                ? canvasWidth * (zoom || 1)
+                : "100%",
+          }}
+        >
+          <p className="mb-2 text-xs font-semibold">단어 뜻</p>
+          <dl className="space-y-1.5 text-sm">
+            {notes.map((note) => (
+              <div key={note.id} className="flex flex-wrap gap-x-2">
+                <dt className="font-medium">{note.text}</dt>
+                <dd>{note.meaning}</dd>
+              </div>
+            ))}
+          </dl>
+        </aside>
+      )}
     </div>
   )
 })

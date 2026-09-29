@@ -85,7 +85,9 @@ const PageSlot = memo(function PageSlot({
     if (active && meta) onPageMeta(doc.id, page, meta)
   }, [active, meta, doc.id, page, onPageMeta])
   return (
-    <div className="pdf-viewer-page">
+    <div
+      className={embedded ? "pdf-viewer-page is-embedded" : "pdf-viewer-page"}
+    >
       {error ? (
         <div className="pdf-page-message" role="alert">
           <span>{page + 1}쪽 정보를 불러오지 못했습니다.</span>
@@ -189,6 +191,19 @@ function DocumentViewer({
   })
   const virtualPages = virtualizer.getVirtualItems()
   const totalHeight = virtualizer.getTotalSize()
+
+  useLayoutEffect(() => {
+    // Notes below the page being read must not move it. Compensate only when
+    // an already-passed page changes height above the viewport.
+    virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (
+      item,
+      _delta,
+      instance
+    ) => item.end <= (instance.scrollOffset ?? 0)
+    return () => {
+      virtualizer.shouldAdjustScrollPositionOnItemSizeChange = undefined
+    }
+  }, [virtualizer])
 
   useLayoutEffect(() => {
     callbacks.current = { onPageChange, onPageMeta, onLookup }
@@ -382,10 +397,12 @@ function DocumentViewer({
           {virtualPages.map((item) => (
             <div
               key={item.index}
+              ref={virtualizer.measureElement}
               className="pdf-page-placeholder"
+              data-index={item.index}
               data-pdf-page={item.index}
               style={{
-                height: item.size,
+                minHeight: estimateSize(item.index),
                 transform: `translateY(${item.start}px)`,
               }}
               aria-label={`${item.index + 1}쪽`}
