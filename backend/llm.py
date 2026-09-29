@@ -18,7 +18,10 @@ def ask(prompt: str, system: str = SYSTEM, timeout: int = 120, model: str | None
            "--system-prompt", system, prompt]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=WORKDIR)
     if r.returncode != 0:
-        raise RuntimeError(f"claude exit {r.returncode}: {r.stderr.strip()[:300]}")
+        msg = (r.stderr.strip() or r.stdout.strip())[:300]
+        if "authenticate" in msg.lower() or "oauth" in msg.lower() or "login" in msg.lower():
+            msg = "Claude Code 로그인 만료 → 터미널에서 `claude login` 후 재시도"
+        raise RuntimeError(msg or f"claude exit {r.returncode}")
     return r.stdout.strip()
 
 def _json(text: str) -> dict:
