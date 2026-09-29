@@ -3,10 +3,15 @@ from contextlib import contextmanager
 DB = os.path.join(os.environ.get("YH_DATA_DIR") or os.path.join(os.path.dirname(os.path.dirname(__file__)), "data"), "yh.sqlite")
 _UNSET = object()
 
+@contextmanager
 def conn():
     c = sqlite3.connect(DB); c.row_factory = sqlite3.Row
-    c.execute("PRAGMA foreign_keys=ON")
-    return c
+    try:
+        c.execute("PRAGMA foreign_keys=ON")
+        with c:
+            yield c
+    finally:
+        c.close()
 
 def init():
     with conn() as c:
