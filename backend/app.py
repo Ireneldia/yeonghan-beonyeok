@@ -5,12 +5,13 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import FileResponse, Response, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from typing import Literal
 import fitz
 
 import db, llm, pdfx, match as matcher, anki, stt
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA = os.path.join(ROOT, "data"); DOCS = os.path.join(DATA, "docs"); EXPORTS = os.path.join(DATA, "exports")
+DATA = os.environ.get("YH_DATA_DIR") or os.path.join(ROOT, "data"); DOCS = os.path.join(DATA, "docs"); EXPORTS = os.path.join(DATA, "exports")
 PROMPTS = os.path.join(ROOT, "prompts")
 for d in (DOCS, EXPORTS): os.makedirs(d, exist_ok=True)
 db.init()
@@ -18,6 +19,40 @@ db.init()
 app = FastAPI(title="영한번역")
 pool = ThreadPoolExecutor(max_workers=3)
 _meta_cache: dict[str, dict] = {}
+
+# ---------- AI 모드 ----------
+class LLMSettings(BaseModel):
+    provider: Literal["codex", "local", "claude"]
+    codex_model: str
+    local_model: str
+    claude_model: str = "haiku"
+    codex_effort: str = ""
+    local_effort: str = ""
+    claude_effort: str = ""
+    codex_fast: bool = False
+
+class Engine(BaseModel):
+    provider: Literal["codex", "local", "claude"]
+    model: str
+    effort: str = ""
+    fast: bool = False
+
+@app.get("/api/llm/settings")
+def get_llm_settings():
+    return llm.settings()
+
+@app.put("/api/llm/settings")
+def set_llm_settings(body: LLMSettings):
+    try:
+        return llm.save_settings(body.model_dump(exclude_unset=True))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except (RuntimeError, OSError, TimeoutError) as e:
+        raise HTTPException(503, str(e)[:200])
+
+@app.get("/api/llm/models")
+def get_llm_models():
+    return llm.models()
 
 # ---------- 페이지 메타 ----------
 def page_meta(doc_id: str, pno: int) -> dict:
@@ -48,16 +83,20 @@ async def worker():
                 r = c.execute("SELECT * FROM lookups WHERE id=?", (lid,)).fetchone()
             if not r or r["status"] != "pending":
                 continue
-            item = db._row(r); d = db.doc(item["doc_id"]); meta = page_meta(item["doc_id"], item["page"])
+            item = db._row(r); d = db.doc(item["doc_id"])
+            if not d:
+                continue
+            meta = page_meta(item["doc_id"], item["page"])
+            engine = {key: item[key] for key in ("provider", "model", "effort", "fast")}
             subject = d.get("subject") or d["name"]
             if item["kind"] == "word":
                 wid = item["word_ids"][0] if item["word_ids"] else None
                 sent = ""
                 if wid is not None and "s" in meta["words"][wid]:
                     sent = meta["sentences"][meta["words"][wid]["s"]]["t"]
-                res = await loop.run_in_executor(pool, llm.word_meaning, item["text"], sent, meta["text"], subject)
+                res = await loop.run_in_executor(pool, llm.word_meaning, item["text"], sent, meta["text"], subject, engine)
             else:
-                res = await loop.run_in_executor(pool, llm.sentence_translation, item["text"], meta["text"], subject)
+                res = await loop.run_in_executor(pool, llm.sentence_translation, item["text"], meta["text"], subject, engine)
             db.set_result(lid, result=res)
         except Exception as e:
             db.set_result(lid, error=str(e)[:300])
@@ -121,19 +160,29 @@ class LookupIn(BaseModel):
 @app.post("/api/docs/{doc_id}/lookup")
 async def lookup(doc_id: str, body: LookupIn):
     if body.kind not in ("word", "sentence"): raise HTTPException(400)
+    meta = page_meta(doc_id, body.page)
+    if not body.word_ids or any(i < 0 or i >= len(meta["words"]) for i in body.word_ids):
+        raise HTTPException(400, "올바른 단어 범위를 선택하세요")
     text = body.text.strip()
     text = re.sub(r"(\w)-\s+([a-z])", r"\1\2", text)      # 줄바꿈 하이픈 "rep- resent" → represent
     if body.kind == "word":
         text = re.sub(r"^[^\w]+|[^\w]+$", "", text)
     if not text: raise HTTPException(400, "empty")
-    ex = db.find_lookup(doc_id, body.page, body.kind, text)
+    engine = llm.selection()
+    ex = db.find_lookup(doc_id, body.page, body.kind, text, body.word_ids, engine)
     if ex: return ex
-    lid = db.add_lookup(doc_id, body.page, body.kind, text, body.word_ids)
+    try:
+        lid = db.add_lookup(doc_id, body.page, body.kind, text, body.word_ids, engine)
+    except LookupError as e:
+        raise HTTPException(404, str(e))
     await queue.put(lid)
-    return db.find_lookup(doc_id, body.page, body.kind, text)
+    result = db.find_lookup(doc_id, body.page, body.kind, text, body.word_ids, engine)
+    if not result: raise HTTPException(404, "문서를 찾을 수 없습니다")
+    return result
 
 @app.get("/api/docs/{doc_id}/lookups")
 def get_lookups(doc_id: str):
+    get_doc(doc_id)
     return db.lookups(doc_id)
 
 @app.delete("/api/lookups/{lid}")
@@ -142,7 +191,10 @@ def del_lookup(lid: int):
 
 @app.post("/api/lookups/{lid}/retry")
 async def retry_lookup(lid: int):
-    with db.conn() as c: c.execute("UPDATE lookups SET status='pending', error=NULL WHERE id=?", (lid,))
+    with db.conn() as c:
+        changed = c.execute("UPDATE lookups SET status='pending', error=NULL WHERE id=? "
+                            "AND EXISTS(SELECT 1 FROM docs WHERE docs.id=lookups.doc_id)", (lid,)).rowcount
+    if not changed: raise HTTPException(404, "조회 기록을 찾을 수 없습니다")
     await queue.put(lid); return {"ok": True}
 
 # ---------- 음성 매칭 ----------
@@ -159,19 +211,31 @@ def match_api(doc_id: str, body: MatchIn):
 class QIn(BaseModel):
     raw: str
     fix: bool = True
+    engine: Engine | None = None
 @app.post("/api/docs/{doc_id}/questions")
 async def add_q(doc_id: str, body: QIn):
     d = db.doc(doc_id)
     if not d: raise HTTPException(404)
     text = body.raw.strip()
+    engine = None
+    error = None
     if body.fix and text:
+        try:
+            engine = llm.validate_engine(body.engine.model_dump()) if body.engine else llm.selection()
+        except ValueError as e:
+            raise HTTPException(400, str(e))
         terms = _doc_terms(doc_id)
         try:
-            text = await asyncio.get_event_loop().run_in_executor(pool, llm.fix_transcript, text, terms, d.get("subject") or d["name"])
-        except Exception:
-            pass
-    qid = db.add_question(doc_id, text, body.raw)
-    return {"id": qid, "text": text, "raw": body.raw}
+            text = await asyncio.get_event_loop().run_in_executor(pool, llm.fix_transcript, text, terms, d.get("subject") or d["name"], engine)
+        except Exception as e:
+            error = str(e)[:300]
+    try:
+        qid = db.add_question(doc_id, text, body.raw, engine if not error else None)
+    except LookupError as e:
+        raise HTTPException(404, str(e))
+    return {"id": qid, "text": text, "raw": body.raw, "provider": engine["provider"] if engine and not error else "",
+            "model": engine["model"] if engine and not error else "", "error": error,
+            "effort": engine["effort"] if engine and not error else "", "fast": engine["fast"] if engine and not error else False}
 
 @app.post("/api/docs/{doc_id}/questions/audio")
 async def add_q_audio(doc_id: str, file: UploadFile = File(...)):
@@ -196,18 +260,22 @@ async def add_q_audio(doc_id: str, file: UploadFile = File(...)):
 def stt_status(): return stt.status
 
 @app.get("/api/docs/{doc_id}/questions")
-def get_qs(doc_id: str): return db.questions(doc_id)
+def get_qs(doc_id: str):
+    get_doc(doc_id)
+    return db.questions(doc_id)
 
 class QEdit(BaseModel):
     text: str
 @app.put("/api/questions/{qid}")
-def edit_q(qid: int, body: QEdit): db.update_question(qid, body.text); return {"ok": True}
+def edit_q(qid: int, body: QEdit):
+    if not db.update_question(qid, body.text): raise HTTPException(404, "질문을 찾을 수 없습니다")
+    return {"ok": True}
 @app.delete("/api/questions/{qid}")
 def del_q(qid: int): db.delete_question(qid); return {"ok": True}
 
 @app.get("/api/docs/{doc_id}/questions/prompt")
 def q_prompt(doc_id: str):
-    d = db.doc(doc_id); qs = db.questions(doc_id)
+    d = get_doc(doc_id); qs = db.questions(doc_id)
     tpl = open(os.path.join(PROMPTS, "예습질문-프롬프트.md"), encoding="utf-8").read()
     lst = "\n".join(f"{i+1}. {q['text']}" for i, q in enumerate(qs)) or "(질문 없음)"
     out = tpl.replace("{교안 이름}", d["name"])
