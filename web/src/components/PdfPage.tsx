@@ -1,0 +1,197 @@
+import { useEffect, useRef, useState } from 'react'
+import type { CSSProperties, KeyboardEvent, PointerEvent } from 'react'
+import { Skeleton } from '@/components/ui/skeleton'
+import type { Doc, Lookup, LookupInput, PageMeta, Word } from '@/lib/types'
+import './pdf-page.css'
+
+type Props = {
+  doc: Doc
+  page: number
+  meta: PageMeta | null
+  lookups: Lookup[]
+  zoom: number
+  onLookup: (input: LookupInput) => void
+  flashWordIds?: number[]
+  embedded?: boolean
+}
+type Gesture = { pointerId: number; context: string; meta: PageMeta; start: number; end: number }
+type Label = { key: string; text: string; style: CSSProperties; center?: number }
+
+function annotationLayout(meta: PageMeta, row: Word[], sy = 1) {
+  const left = Math.min(...row.map(word => word.x0)), right = Math.max(...row.map(word => word.x1))
+  const y0 = Math.min(...row.map(word => word.y0)), y1 = Math.max(...row.map(word => word.y1))
+  const gap = Math.min(meta.h - y1 - 2, ...row.map(word => word.gap ?? 99))
+  const minimum = 7 / sy
+  const size = Math.max(minimum, Math.min(13 / sy, (y1 - y0) * 0.5))
+  const fitted = Math.min(size, (gap - 4.5) / 1.25)
+  if (fitted >= minimum) return { mode: 'below', center: (left + right) / 2, top: y1 + 3.5, size: fitted }
+  if (meta.w - (meta.right ?? meta.w) >= 40) return { mode: 'margin', center: 0, top: y1 - 7, size: Math.max(8 / sy, 6.5) }
+  const previousBottom = Math.max(2, ...meta.words.filter(word => word.y0 < y0 - 1 && word.x1 > left && word.x0 < right).map(word => word.y1))
+  const top = y0 - 2.5 - size * 1.25
+  return { mode: top >= previousBottom + 1 ? 'above' : 'note', center: (left + right) / 2, top, size }
+}
+
+function centerAnnotation(node: HTMLSpanElement | null, center: number, pageWidth: number, padding: number) {
+  if (!node) return
+  const position = () => {
+    const half = node.getBoundingClientRect().width / 2
+    node.style.left = `${Math.max(half + padding, Math.min(pageWidth - half - padding, center))}px`
+  }
+  const observer = new ResizeObserver(position)
+  observer.observe(node)
+  position()
+  return () => observer.disconnect()
+}
+
+function selectionInput(meta: PageMeta, page: number, start: number, end: number, alt: boolean): LookupInput | null {
+  if (![start, end].every(id => Number.isInteger(id) && id >= 0 && id < meta.words.length)) return null
+  let ids = Array.from({ length: Math.abs(end - start) + 1 }, (_, i) => Math.min(start, end) + i)
+  let kind: LookupInput['kind'] = ids.length <= 2 ? 'word' : 'sentence'
+  const word = meta.words[start]
+  if (start === end && alt && word.s !== undefined && meta.sentences[word.s]) {
+    ids = meta.sentences[word.s].w.filter(id => id >= 0 && id < meta.words.length)
+    kind = 'sentence'
+  } else if (start === end && word.join !== undefined && meta.words[word.join]) {
+    ids.push(word.join)
+  }
+  return ids.length ? { page, kind, text: ids.map(id => meta.words[id].t).join(' '), word_ids: ids } : null
+}
+
+export function PdfPage({ doc, page, meta, lookups, zoom, onLookup, flashWordIds = [], embedded = false }: Props) {
+  const canvasRef = useRef<HTMLDivElement>(null)
+  const imageRef = useRef<HTMLImageElement>(null)
+  const overlayRef = useRef<HTMLDivElement>(null)
+  const gesture = useRef<Gesture | null>(null)
+  const [canvasWidth, setCanvasWidth] = useState(0)
+  const [imageSize, setImageSize] = useState({ width: 0, height: 0 })
+  const [loadedSource, setLoadedSource] = useState('')
+  const [failedSource, setFailedSource] = useState('')
+  const [selection, setSelection] = useState<{ context: string; source: string; ids: number[] } | null>(null)
+  const context = `${doc.id}:${page}`
+  const source = `/api/docs/${encodeURIComponent(doc.id)}/page/${page}.png?scale=${zoom > 1.3 ? 3 : 2}`
+  const ready = !!meta && meta.w > 0 && meta.h > 0 && loadedSource === source && imageSize.width > 0 && imageSize.height > 0
+
+  useEffect(() => {
+    const canvas = canvasRef.current, image = imageRef.current
+    if (!canvas || !image) return
+    const observer = new ResizeObserver(entries => {
+      for (const entry of entries) {
+        if (entry.target === canvas) setCanvasWidth(entry.contentRect.width)
+        if (entry.target === image) setImageSize({ width: entry.contentRect.width, height: entry.contentRect.height })
+      }
+    })
+    observer.observe(canvas)
+    observer.observe(image)
+    return () => observer.disconnect()
+  }, [source])
+
+  useEffect(() => () => { gesture.current = null }, [context, source])
+
+  function wordAt(x: number, y: number) {
+    const target = document.elementFromPoint(x, y)?.closest<HTMLElement>('[data-pdf-word]')
+    return target && overlayRef.current?.contains(target) ? Number(target.dataset.pdfWord) : null
+  }
+  function clearGesture(event: PointerEvent<HTMLDivElement>) {
+    if (gesture.current?.pointerId !== event.pointerId) return
+    gesture.current = null
+    setSelection(null)
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
+  }
+  function startGesture(event: PointerEvent<HTMLDivElement>) {
+    if (!ready || !meta || event.button !== 0 || !event.isPrimary || gesture.current) return
+    const target = (event.target as Element).closest<HTMLElement>('[data-pdf-word]')
+    if (!target || !event.currentTarget.contains(target)) return
+    const id = Number(target.dataset.pdfWord)
+    event.preventDefault()
+    target.focus({ preventScroll: true })
+    gesture.current = { pointerId: event.pointerId, context, meta, start: id, end: id }
+    setSelection({ context, source, ids: [id] })
+    event.currentTarget.setPointerCapture(event.pointerId)
+  }
+  function moveGesture(event: PointerEvent<HTMLDivElement>) {
+    const active = gesture.current
+    if (!active || active.pointerId !== event.pointerId || active.context !== context || active.meta !== meta) return
+    const id = wordAt(event.clientX, event.clientY)
+    if (id === null || id === active.end) return
+    active.end = id
+    setSelection({ context, source, ids: Array.from({ length: Math.abs(id - active.start) + 1 }, (_, i) => Math.min(id, active.start) + i) })
+  }
+  function finishGesture(event: PointerEvent<HTMLDivElement>) {
+    const active = gesture.current
+    if (!active || active.pointerId !== event.pointerId) return
+    clearGesture(event)
+    if (!ready || active.context !== context || active.meta !== meta) return
+    const releasedOver = document.elementFromPoint(event.clientX, event.clientY)
+    if (!releasedOver || !event.currentTarget.contains(releasedOver)) return
+    const input = selectionInput(active.meta, page, active.start, wordAt(event.clientX, event.clientY) ?? active.end, event.altKey)
+    if (input) onLookup(input)
+  }
+  function activateWord(event: KeyboardEvent<HTMLButtonElement>, id: number) {
+    if (!ready || !meta || event.repeat || !['Enter', ' '].includes(event.key)) return
+    event.preventDefault()
+    const input = selectionInput(meta, page, id, id, event.altKey)
+    if (input) onLookup(input)
+  }
+
+  const sx = meta ? imageSize.width / meta.w : 0, sy = meta ? imageSize.height / meta.h : 0
+  const pending = new Set<number>(), sentences = new Set<number>(), errors = new Set<number>()
+  const selected = new Set(selection?.context === context && selection.source === source ? selection.ids : [])
+  const flashed = new Set(flashWordIds)
+  const lines: { key: string; style: CSSProperties }[] = [], labels: Label[] = []
+  const marginRows = new Map<number, Label>()
+  for (const lookup of lookups.filter(item => item.doc_id === doc.id && item.page === page)) {
+    for (const id of lookup.word_ids) {
+      if (lookup.status === 'pending') pending.add(id)
+      else if (lookup.status === 'error') errors.add(id)
+      else if (lookup.kind === 'sentence') sentences.add(id)
+    }
+    if (!ready || !meta || lookup.kind !== 'word' || lookup.status !== 'done' || !lookup.result?.meaning) continue
+    const words = lookup.word_ids.map(id => meta.words[id]).filter((word): word is Word => !!word)
+    if (!words.length) continue
+    const rows = new Map<number, Word[]>()
+    for (const word of words) {
+      const y = Math.round(word.y1)
+      rows.set(y, [...(rows.get(y) || []), word])
+    }
+    for (const [y, row] of rows) {
+      const left = Math.min(...row.map(word => word.x0)), right = Math.max(...row.map(word => word.x1))
+      lines.push({ key: `${lookup.id}:${y}`, style: { left: left * sx, top: (Math.max(...row.map(word => word.y1)) + 0.5) * sy, width: (right - left) * sx } })
+    }
+    const first = words.reduce((a, b) => b.y0 < a.y0 || (b.y0 === a.y0 && b.x0 < a.x0) ? b : a)
+    const row = words.filter(word => word.b === first.b && word.l === first.l)
+    const layout = annotationLayout(meta, row, sy), right = meta.right ?? meta.w
+    if (layout.mode === 'margin') {
+      const y = Math.round(first.y1), text = `${lookup.text} ${lookup.result.meaning}`, previous = marginRows.get(y)
+      if (previous) previous.text += ` · ${text}`
+      else {
+        const label = { key: `margin:${y}`, text, style: { left: (right + 6) * sx, top: layout.top * sy, fontSize: layout.size * sy, maxWidth: Math.max(0, meta.w - right - 8) * sx } }
+        marginRows.set(y, label)
+        labels.push(label)
+      }
+    } else if (layout.mode !== 'note') labels.push({ key: `word:${lookup.id}`, text: lookup.result.meaning, center: layout.center * sx,
+      style: { left: layout.center * sx, top: layout.top * sy, fontSize: layout.size * sy, maxWidth: Math.max(0, meta.w - 4) * sx, transform: 'translateX(-50%)' } })
+  }
+
+  return (
+    <div ref={canvasRef} className={`pdf-canvas${embedded ? ' is-embedded' : ''}`} aria-label="교안 페이지" aria-busy={!ready && failedSource !== source}>
+      <div className="pdf-sheet" data-loading={!ready || undefined} style={{ width: embedded ? '100%' : canvasWidth ? canvasWidth * (zoom || 1) : '100%', aspectRatio: !ready && meta ? `${meta.w} / ${meta.h}` : undefined }}>
+        <img key={source} ref={imageRef} src={source} alt={`${doc.name} ${page + 1}쪽`} draggable={false}
+          onLoad={() => setLoadedSource(source)} onError={() => setFailedSource(source)} />
+        {!ready && <div className="pdf-loading">
+          {failedSource !== source && <Skeleton className="h-3 w-32" />}
+          <span role={failedSource === source ? 'alert' : 'status'}>{failedSource === source ? '페이지를 불러오지 못했습니다.' : '교안 불러오는 중…'}</span>
+        </div>}
+        {ready && meta && <div ref={overlayRef} className="pdf-overlay" onPointerDown={startGesture} onPointerMove={moveGesture}
+          onPointerUp={finishGesture} onPointerCancel={clearGesture} onLostPointerCapture={clearGesture}>
+          {meta.words.map(word => <button key={word.i} type="button" data-pdf-word={word.i}
+            className={`pdf-word${sentences.has(word.i) ? ' is-sentence' : ''}${pending.has(word.i) ? ' is-pending' : ''}${errors.has(word.i) ? ' is-error' : ''}${selected.has(word.i) ? ' is-selected' : ''}${flashed.has(word.i) ? ' is-flashed' : ''}`}
+            style={{ left: word.x0 * sx, top: word.y0 * sy, width: (word.x1 - word.x0) * sx, height: (word.y1 - word.y0) * sy }}
+            aria-label={`${word.t} 뜻 보기`} title={word.t} onKeyDown={event => activateWord(event, word.i)} />)}
+          {lines.map(line => <span key={line.key} className="pdf-underline" style={line.style} aria-hidden="true" />)}
+          {labels.map(label => <span key={label.key} className="pdf-annotation" style={label.style} title={label.text}
+            ref={label.center === undefined ? undefined : node => centerAnnotation(node, label.center!, imageSize.width, 2 * sx)}>{label.text}</span>)}
+        </div>}
+      </div>
+    </div>
+  )
+}
