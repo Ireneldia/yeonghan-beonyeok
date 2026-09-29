@@ -75,19 +75,19 @@
   min-height: 0;
   overflow: auto;
   overflow-anchor: none;
-  padding: 24px;
+  padding: 0 24px;
   background: #f3f4f6;
   outline: none;
 }
 .pdf-stack {
-  display: flex;
-  flex-direction: column;
-  gap: 24px;
+  position: relative;
   margin-inline: auto;
 }
 .pdf-page-placeholder {
-  flex: none;
-  position: relative;
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
   background: white;
   box-shadow: 0 2px 12px rgb(15 23 42 / 10%);
 }

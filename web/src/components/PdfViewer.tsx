@@ -1,4 +1,5 @@
 import {
+  memo,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -6,6 +7,7 @@ import {
   useRef,
   useState,
 } from "react"
+import { useVirtualizer } from "@tanstack/react-virtual"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { api } from "@/lib/api"
@@ -25,27 +27,12 @@ type Props = {
   onPageMeta: (docId: string, page: number, meta: PageMeta) => void
 }
 type PageSize = { w: number; h: number }
-type Layout = { top: number; height: number }
 const padding = 24
 const gap = 24
+const emptyLookups: Lookup[] = []
+const emptyWordIds: number[] = []
 
-function pageLayout(sizes: PageSize[], width: number): Layout[] {
-  let top = padding
-  return sizes.map(({ w, h }) => {
-    const page = { top, height: (width * h) / w }
-    top += page.height + gap
-    return page
-  })
-}
-function pageAt(layout: Layout[], position: number): number {
-  const index = layout.findIndex(
-    (page, i) =>
-      position < page.top + page.height + (i < layout.length - 1 ? gap / 2 : 0)
-  )
-  return index < 0 ? Math.max(0, layout.length - 1) : index
-}
-
-function PageSlot({
+const PageSlot = memo(function PageSlot({
   doc,
   page,
   active,
@@ -128,7 +115,7 @@ function PageSlot({
       )}
     </div>
   )
-}
+})
 
 // Each document owns its cache and requests. Page changes preserve the scrolling viewport.
 export function PdfViewer(props: Props) {
@@ -150,7 +137,7 @@ function DocumentViewer({
   const [sizes, setSizes] = useState<PageSize[]>([])
   const [geometryError, setGeometryError] = useState("")
   const [geometryAttempt, setGeometryAttempt] = useState(0)
-  const [viewport, setViewport] = useState({ width: 0, height: 0, top: 0 })
+  const [viewport, setViewport] = useState({ width: 0, height: 0 })
   const scrollRef = useRef<HTMLDivElement>(null)
   const callbacks = useRef({ onPageChange, onPageMeta, onLookup })
   const activePage = useRef(page)
@@ -159,11 +146,49 @@ function DocumentViewer({
   const anchor = useRef({ page, ratio: 0 })
   const positioned = useRef<{
     page: number
-    layout: Layout[]
+    width: number
     height: number
+    sizes: PageSize[]
   } | null>(null)
   const width = Math.max(1, viewport.width - padding * 2) * (zoom || 1)
-  const layout = useMemo(() => pageLayout(sizes, width), [sizes, width])
+  const groupedLookups = useMemo(() => {
+    const groups = new Map<number, Lookup[]>()
+    for (const lookup of lookups) {
+      if (lookup.doc_id !== doc.id) continue
+      const rows = groups.get(lookup.page)
+      if (rows) rows.push(lookup)
+      else groups.set(lookup.page, [lookup])
+    }
+    return groups
+  }, [lookups, doc.id])
+  const flash = flashWordIds?.length ? flashWordIds : emptyWordIds
+  const estimateSize = useCallback(
+    (index: number) => (width * sizes[index].h) / sizes[index].w,
+    [sizes, width]
+  )
+  // Measurement keys include geometry so zoom/resize invalidates estimates.
+  // React keys below remain page numbers, preserving mounted page state.
+  const getItemKey = useCallback(
+    (index: number) => `${index}:${width}:${sizes[index].w}:${sizes[index].h}`,
+    [sizes, width]
+  )
+  // Virtualizer owns mutable measurements; only scalar item data reaches memoized pages.
+  // eslint-disable-next-line react-hooks/incompatible-library
+  const virtualizer = useVirtualizer({
+    count: sizes.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize,
+    getItemKey,
+    overscan: 2,
+    paddingStart: padding,
+    paddingEnd: padding,
+    scrollPaddingStart: padding,
+    gap,
+    enabled: mode === "continuous" && viewport.width > 0 && sizes.length > 0,
+    useFlushSync: false,
+  })
+  const virtualPages = virtualizer.getVirtualItems()
+  const totalHeight = virtualizer.getTotalSize()
 
   useLayoutEffect(() => {
     callbacks.current = { onPageChange, onPageMeta, onLookup }
@@ -212,7 +237,7 @@ function DocumentViewer({
           height = node.clientHeight
         return value.width === width && value.height === height
           ? value
-          : { ...value, width, height }
+          : { width, height }
       })
     measure()
     const observer = new ResizeObserver(measure)
@@ -238,29 +263,24 @@ function DocumentViewer({
   const sampleViewport = useCallback(
     (report: boolean) => {
       const node = scrollRef.current
-      if (!node || !layout.length) return
+      if (!node) return
       const center = node.scrollTop + node.clientHeight / 2
-      const number = pageAt(layout, center)
+      const item = virtualizer.getVirtualItemForOffset(center)
+      if (!item) return
       anchor.current = {
-        page: number,
-        ratio: Math.max(
-          0,
-          Math.min(1, (center - layout[number].top) / layout[number].height)
-        ),
+        page: item.index,
+        ratio: Math.max(0, Math.min(1, (center - item.start) / item.size)),
       }
-      setViewport((value) =>
-        value.top === node.scrollTop ? value : { ...value, top: node.scrollTop }
-      )
       if (
         report &&
-        number !== activePage.current &&
-        number !== reportedPage.current
+        item.index !== activePage.current &&
+        item.index !== reportedPage.current
       ) {
-        reportedPage.current = number
-        callbacks.current.onPageChange(number)
+        reportedPage.current = item.index
+        callbacks.current.onPageChange(item.index)
       }
     },
-    [layout]
+    [virtualizer]
   )
 
   useLayoutEffect(() => {
@@ -269,32 +289,41 @@ function DocumentViewer({
       return
     }
     const node = scrollRef.current
-    if (!node || !viewport.width || !layout.length) return
+    if (!node || !viewport.width || !sizes.length) return
     const previous = positioned.current
     const pageChanged = previous?.page !== page
     const ownReport = pageChanged && reportedPage.current === page
     if (!previous || (pageChanged && !ownReport)) {
-      node.scrollTop = Math.max(
-        0,
-        layout[Math.min(page, layout.length - 1)].top - padding
-      )
+      virtualizer.scrollToIndex(page, { align: "start", behavior: "auto" })
       programmaticTop.current = node.scrollTop
     } else if (
-      previous.layout !== layout ||
-      previous.height !== viewport.height
+      previous.width !== width ||
+      previous.height !== viewport.height ||
+      previous.sizes !== sizes
     ) {
       const saved = anchor.current
-      const target = layout[Math.min(saved.page, layout.length - 1)]
-      node.scrollTop = Math.max(
-        0,
-        target.top + target.height * saved.ratio - node.clientHeight / 2
-      )
-      programmaticTop.current = node.scrollTop
+      const item =
+        virtualizer.measurementsCache[Math.min(saved.page, sizes.length - 1)]
+      if (item) {
+        virtualizer.scrollToOffset(
+          item.start + item.size * saved.ratio - node.clientHeight / 2
+        )
+        programmaticTop.current = node.scrollTop
+      }
     }
     if (pageChanged) reportedPage.current = null
-    positioned.current = { page, layout, height: viewport.height }
+    positioned.current = { page, width, height: viewport.height, sizes }
     sampleViewport(false)
-  }, [mode, page, layout, viewport.width, viewport.height, sampleViewport])
+  }, [
+    mode,
+    page,
+    sizes,
+    width,
+    viewport.width,
+    viewport.height,
+    virtualizer,
+    sampleViewport,
+  ])
 
   if (mode === "page")
     return (
@@ -305,15 +334,13 @@ function DocumentViewer({
         active
         cache={cache}
         zoom={zoom}
-        lookups={lookups}
+        lookups={groupedLookups.get(page) ?? emptyLookups}
         onLookup={lookup}
         onPageMeta={publishMeta}
-        flashWordIds={flashWordIds}
+        flashWordIds={flash}
       />
     )
 
-  const first = pageAt(layout, Math.max(0, viewport.top - viewport.height))
-  const last = pageAt(layout, viewport.top + viewport.height * 2)
   return (
     <div
       ref={scrollRef}
@@ -324,8 +351,6 @@ function DocumentViewer({
       onScroll={() => {
         const node = scrollRef.current
         if (!node || !positioned.current) return
-        // A short slide can leave the viewport center on a later page after a
-        // jump. Keep the requested page until the user actually scrolls again.
         const ownScroll =
           programmaticTop.current !== null &&
           Math.abs(node.scrollTop - programmaticTop.current) < 1
@@ -353,29 +378,30 @@ function DocumentViewer({
           <span>교안 불러오는 중…</span>
         </div>
       ) : (
-        <div className="pdf-stack" style={{ width }}>
-          {layout.map((position, number) => (
+        <div className="pdf-stack" style={{ width, height: totalHeight }}>
+          {virtualPages.map((item) => (
             <div
-              key={number}
+              key={item.index}
               className="pdf-page-placeholder"
-              data-pdf-page={number}
-              style={{ height: position.height }}
-              aria-label={`${number + 1}쪽`}
+              data-pdf-page={item.index}
+              style={{
+                height: item.size,
+                transform: `translateY(${item.start}px)`,
+              }}
+              aria-label={`${item.index + 1}쪽`}
             >
-              {number >= first && number <= last ? (
-                <PageSlot
-                  doc={doc}
-                  page={number}
-                  active={number === page}
-                  cache={cache}
-                  zoom={zoom}
-                  embedded
-                  lookups={lookups}
-                  onLookup={lookup}
-                  onPageMeta={publishMeta}
-                  flashWordIds={flashWordIds}
-                />
-              ) : null}
+              <PageSlot
+                doc={doc}
+                page={item.index}
+                active={item.index === page}
+                cache={cache}
+                zoom={zoom}
+                embedded
+                lookups={groupedLookups.get(item.index) ?? emptyLookups}
+                onLookup={lookup}
+                onPageMeta={publishMeta}
+                flashWordIds={item.index === page ? flash : emptyWordIds}
+              />
             </div>
           ))}
         </div>
