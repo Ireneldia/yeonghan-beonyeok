@@ -15,13 +15,6 @@ python3 -m pip install -r requirements.txt
 번역은 `claude -p`(Claude Code 헤드리스, 구독 사용)로 한다. API 키 불필요. 단어·문장 번역 모델은 `YH_MODEL`(기본 haiku), 질문 교정 모델은 `YH_FIX_MODEL`(기본 sonnet).
 질문 받아쓰기는 로컬 Whisper(`faster-whisper`). 모델은 `data/models/faster-whisper-large-v3-turbo/`에 있어야 한다. 없으면 `./scripts/download-whisper.sh`로 받는다(1.6GB, Hugging Face 자동 다운로드는 자주 멈춰서 미러 이어받기 스크립트를 쓴다). 🎤 읽기는 Chrome 내장 인식 그대로.
 
-## 아침 루틴
-1. 홈 → PDF 불러오기(과목명 입력) → "요약 프롬프트 복사" → 클로드 조교에 붙여 요약 받기.
-2. 리더에서 읽기. **단어 클릭** = 뜻. **드래그** = 문장 번역(오른쪽 패널). **Alt+클릭** = 그 단어가 든 문장 번역. **🎤 읽기** = 영어로 단어/문장을 소리 내어 읽으면 페이지에서 찾아 같은 처리.
-3. **탭용 PDF 내보내기** → `data/exports/<교안>_번역.pdf`. 밑줄+한글이 페이지에 그려지고, 문장 번역은 슬라이드 아래에 붙는다.
-4. 2회독하며 **🎤 질문**을 누르고 한국어로 말한 뒤 **다시 눌러 끄면**, 녹음 전체를 로컬 Whisper가 받아쓰고(오디오는 밖으로 안 나감) Sonnet이 교안 용어·LaTeX 수식으로 정리해 질문 하나로 쌓는다. 중간에 쉬어도 안 끊김. **전체 복사(프롬프트)** → 클로드 조교/whisper-note 예습 질문란.
-5. 홈 → **Anki 덱 만들기** → `data/exports/<과목>.apkg` → 노트북 Anki에 가져오기 → AnkiWeb 동기화 → 아이폰 Safari로 복습.
-
 ## 기술 스택
 
 | 분류 | 기술 | 버전 | 역할 |
