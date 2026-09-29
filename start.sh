@@ -7,6 +7,6 @@ if curl -s -o /dev/null "$URL/api/docs"; then
   open -a "Google Chrome" "$URL" 2>/dev/null || open "$URL"
   exit 0
 fi
-( for i in {1..40}; do sleep 0.5; curl -s -o /dev/null "$URL/api/docs" && { open -a "Google Chrome" "$URL" 2>/dev/null || open "$URL"; break; }; done ) &
+( for i in {1..240}; do sleep 0.5; curl -s -o /dev/null "$URL/api/docs" && { open -a "Google Chrome" "$URL" 2>/dev/null || open "$URL"; break; }; done ) &
 echo "영한번역 서버 시작 → $URL   (이 창을 닫으면 종료)"
 exec ./run.sh

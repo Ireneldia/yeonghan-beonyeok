@@ -655,4 +655,4 @@ async def _no_cache_static(request, call_next):
         resp.headers["Cache-Control"] = "no-cache"
     return resp
 
-app.mount("/", StaticFiles(directory=os.path.join(ROOT, "frontend"), html=True), name="fe")
+app.mount("/", StaticFiles(directory=os.path.join(ROOT, "web", "dist"), html=True, check_dir=False), name="fe")
