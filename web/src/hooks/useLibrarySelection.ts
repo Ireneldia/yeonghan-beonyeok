@@ -22,7 +22,6 @@ function itemSelection(
   id: string,
   modifiers: Modifiers
 ): string[] {
-  if (!ids.includes(id)) return selected
   const additive = modifiers.metaKey || modifiers.ctrlKey
   if (modifiers.shiftKey) {
     const start = Math.max(0, ids.indexOf(anchor ?? id)),
@@ -47,6 +46,7 @@ export function useLibrarySelection({
 }) {
   const signature = JSON.stringify([scopeKey, itemIds])
   const ids = useMemo(() => JSON.parse(signature)[1] as string[], [signature])
+  const idSet = useMemo(() => new Set(ids), [ids])
   const selectionId = useId()
   const containerRef = useRef<HTMLDivElement>(null)
   const area = useRef<SelectionArea | null>(null)
@@ -60,10 +60,14 @@ export function useLibrarySelection({
     signature,
     ids: [] as string[],
   })
-  const selectedIds =
-    selection.scopeKey === scopeKey
-      ? selection.ids.filter((id) => ids.includes(id))
-      : []
+  const selectedIds = useMemo(
+    () =>
+      selection.scopeKey === scopeKey
+        ? selection.ids.filter((id) => idSet.has(id))
+        : [],
+    [selection, scopeKey, idSet]
+  )
+  const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds])
   if (selection.signature !== signature)
     setSelection({ scopeKey, signature, ids: selectedIds })
 
@@ -74,7 +78,14 @@ export function useLibrarySelection({
       current.current = { scopeKey, ids: next }
       anchor.current =
         nextAnchor && next.includes(nextAnchor) ? nextAnchor : (next[0] ?? null)
-      setSelection({ scopeKey, signature, ids: next })
+      setSelection((previous) =>
+        previous.scopeKey === scopeKey &&
+        previous.signature === signature &&
+        previous.ids.length === next.length &&
+        previous.ids.every((id, index) => id === next[index])
+          ? previous
+          : { scopeKey, signature, ids: next }
+      )
       return next
     },
     [ids, scopeKey, signature]
@@ -129,7 +140,7 @@ export function useLibrarySelection({
     area.current = instance
     const retained =
       current.current.scopeKey === scopeKey
-        ? current.current.ids.filter((id) => ids.includes(id))
+        ? current.current.ids.filter((id) => idSet.has(id))
         : []
     current.current = { scopeKey, ids: retained }
     if (!anchor.current || !retained.includes(anchor.current))
@@ -200,7 +211,7 @@ export function useLibrarySelection({
       if (!previousId && node.id === selectionId) node.removeAttribute("id")
     }
   }, [
-    ids,
+    idSet,
     scopeKey,
     selectionId,
     commit,
@@ -217,7 +228,7 @@ export function useLibrarySelection({
     setSelectedIds([], null)
   }
   function selectItem(id: string, modifiers: Modifiers = {}) {
-    if (!ids.includes(id)) return
+    if (!idSet.has(id)) return
     cancelGesture()
     const before =
       current.current.scopeKey === scopeKey ? current.current.ids : []
@@ -264,7 +275,7 @@ export function useLibrarySelection({
     setSelectedIds,
     clearSelection,
     selectItem,
-    isSelected: (id: string) => selectedIds.includes(id),
+    isSelected: (id: string) => selectedSet.has(id),
     containerRef,
     onClickCapture,
     onKeyDown,

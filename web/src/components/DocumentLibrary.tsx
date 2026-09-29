@@ -1,4 +1,4 @@
-import { useState, type DragEvent, type MouseEvent } from "react"
+import { useMemo, useState, type DragEvent, type MouseEvent } from "react"
 import {
   Check,
   ChevronRight,
@@ -84,28 +84,30 @@ export function DocumentLibrary(props: Props) {
     }
   }
   const [sort, setSort] = useState<"name" | "recent">("name")
-  const compare = (a: Item, b: Item) =>
-    sort === "recent"
-      ? b.created - a.created
-      : a.name.localeCompare(b.name, "ko", { numeric: true })
-  const items: Item[] = [
-    ...folders
-      .map((folder) => ({
-        key: `folder:${folder.id}`,
-        name: folder.name,
-        created: folder.created,
-        folder,
-      }))
-      .sort(compare),
-    ...docs
-      .map((doc) => ({
-        key: `doc:${doc.id}`,
-        name: doc.name,
-        created: doc.created,
-        doc,
-      }))
-      .sort(compare),
-  ]
+  const items = useMemo<Item[]>(() => {
+    const compare = (a: Item, b: Item) =>
+      sort === "recent"
+        ? b.created - a.created
+        : a.name.localeCompare(b.name, "ko", { numeric: true })
+    return [
+      ...folders
+        .map((folder) => ({
+          key: `folder:${folder.id}`,
+          name: folder.name,
+          created: folder.created,
+          folder,
+        }))
+        .sort(compare),
+      ...docs
+        .map((doc) => ({
+          key: `doc:${doc.id}`,
+          name: doc.name,
+          created: doc.created,
+          doc,
+        }))
+        .sort(compare),
+    ]
+  }, [docs, folders, sort])
   const {
     selectedIds,
     setSelectedIds,
@@ -119,7 +121,7 @@ export function DocumentLibrary(props: Props) {
     itemIds: items.map((item) => item.key),
     scopeKey: `${currentFolder?.id ?? "root"}:${query}`,
   })
-  const selected = splitSelection(selectedIds)
+  const selected = useMemo(() => splitSelection(selectedIds), [selectedIds])
   const count = selectedIds.length
   const movable = selected.docIds.length > 0 && !selected.folderIds.length
   function chosen(item: Item) {
@@ -356,8 +358,8 @@ export function DocumentLibrary(props: Props) {
             >
               {items.map((item) => {
                 const itemSelected = isSelected(item.key),
-                  keys = chosen(item),
-                  itemSelection = splitSelection(keys)
+                  keys = itemSelected ? selectedIds : [item.key],
+                  itemSelection = itemSelected ? selected : splitSelection(keys)
                 const highlight =
                   item.folder && props.dropTarget === item.folder.id
                 return (
