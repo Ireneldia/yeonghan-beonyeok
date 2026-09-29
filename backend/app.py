@@ -1,7 +1,8 @@
 from __future__ import annotations
 import asyncio, json, math, os, re, shutil, sqlite3, tempfile, threading, uuid
 from collections import OrderedDict
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from multiprocessing import get_context
 from pathlib import Path
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
@@ -9,7 +10,6 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ValidationError
 from typing import Literal
 from urllib.parse import quote
-import fitz
 
 import db, llm, pdfx, match as matcher, anki, stt, local_models, speech_models, document_import
 
@@ -21,9 +21,31 @@ db.init()
 
 app = FastAPI(title="영한번역")
 pool = ThreadPoolExecutor(max_workers=3)
+_pdf_pool = ProcessPoolExecutor(max_workers=1, mp_context=get_context("spawn"))
+_workers: list[asyncio.Task] = []
 _meta_cache: OrderedDict[str, dict] = OrderedDict()
-# ponytail: 로컬 파일 작업을 직렬화한다. 여러 교안을 동시에 렌더링해야 하면 문서별 잠금으로 바꾼다.
+_terms_cache: OrderedDict[str, list[str]] = OrderedDict()
+# 파일 삭제는 PDF worker가 작업을 마칠 때까지 기다린다. 모든 PyMuPDF 호출은 한 프로세스에서 실행한다.
 _doc_files_lock = threading.RLock()
+
+def _pdf_call(function, *args):
+    return _pdf_pool.submit(function, *args).result()
+
+async def _finish_file_work(work):
+    try:
+        return await asyncio.shield(work)
+    except asyncio.CancelledError:
+        # 실행 중인 worker가 파일을 쓰는 동안 임시 디렉터리를 먼저 지우지 않는다.
+        while not work.done():
+            try: await asyncio.shield(work)
+            except asyncio.CancelledError: continue
+            except Exception: break
+        if not work.cancelled(): work.exception()
+        raise
+
+def _copy_upload(source, destination):
+    with open(destination, "wb") as target:
+        shutil.copyfileobj(source, target)
 
 # ---------- AI 모드 ----------
 class LLMSettings(BaseModel):
@@ -211,7 +233,7 @@ def page_meta(doc_id: str, pno: int) -> dict:
             except (OSError, ValueError):
                 meta = None
             if not _valid_meta(meta):
-                meta = pdfx.page_metadata(d["path"], pno)
+                meta = _pdf_call(pdfx.page_metadata, d["path"], pno)
                 meta["_cache_version"] = pdfx.META_VERSION
                 with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=DOCS, delete=False) as f:
                     temporary = f.name
@@ -242,7 +264,7 @@ async def worker():
             item = db._row(r); d = db.doc(item["doc_id"])
             if not d:
                 continue
-            meta = page_meta(item["doc_id"], item["page"])
+            meta = await asyncio.to_thread(page_meta, item["doc_id"], item["page"])
             engine = {key: item[key] for key in ("provider", "model", "effort", "fast")}
             subject = d.get("subject") or d["name"]
             if item["kind"] == "word":
@@ -253,9 +275,9 @@ async def worker():
                 res = await loop.run_in_executor(pool, llm.word_meaning, item["text"], sent, meta["text"], subject, engine)
             else:
                 res = await loop.run_in_executor(pool, llm.sentence_translation, item["text"], meta["text"], subject, engine)
-            db.set_result(lid, result=res)
+            await asyncio.to_thread(db.set_result, lid, result=res)
         except Exception as e:
-            db.set_result(lid, error=str(e)[:300])
+            await asyncio.to_thread(db.set_result, lid, error=str(e)[:300])
         finally:
             queue.task_done()
 
@@ -263,9 +285,17 @@ async def worker():
 async def _start():
     stt.preload()
     for _ in range(3):
-        asyncio.create_task(worker())
+        _workers.append(asyncio.create_task(worker()))
     for it in db.pending():
         await queue.put(it["id"])
+
+@app.on_event("shutdown")
+async def _stop():
+    for task in _workers: task.cancel()
+    await asyncio.gather(*_workers, return_exceptions=True)
+    _workers.clear()
+    await asyncio.to_thread(_pdf_pool.shutdown, wait=True, cancel_futures=True)
+    pool.shutdown(wait=False, cancel_futures=True)
 
 # ---------- 과목 폴더·문서 ----------
 class FolderIn(BaseModel):
@@ -322,28 +352,20 @@ async def upload(request: Request, file: UploadFile = File(...), subject: str = 
         with tempfile.TemporaryDirectory(prefix=".import-", dir=DOCS) as directory:
             source, output = Path(directory) / ("source" + extension), Path(directory) / "validated.pdf"
             def prepare():
-                with source.open("wb") as target: shutil.copyfileobj(file.file, target)
-                document_import.copy_pdf(source, output)
-                return pdfx.page_count(str(output))
+                _copy_upload(file.file, source)
+                return _pdf_call(document_import.copy_pdf, source, output)
             work = asyncio.get_running_loop().run_in_executor(None, prepare)
-            try:
-                pages = await asyncio.shield(work)
-            except asyncio.CancelledError:
-                # 복사 스레드가 파일을 쓰는 중에는 임시 디렉터리를 먼저 지우지 않는다.
-                while not work.done():
-                    try: await asyncio.shield(work)
-                    except asyncio.CancelledError: continue
-                    except Exception: break
-                if not work.cancelled(): work.exception()
-                raise
-            with _doc_files_lock:
-                os.replace(output, path)
-                try:
-                    db.add_doc(doc_id, filename[:-len(extension)], subject, str(path), pages, **folder)
-                except Exception:
-                    path.unlink()
-                    raise
-                return db.doc(doc_id)
+            pages = await _finish_file_work(work)
+            def publish():
+                with _doc_files_lock:
+                    os.replace(output, path)
+                    try:
+                        db.add_doc(doc_id, filename[:-len(extension)], subject, str(path), pages, **folder)
+                    except Exception:
+                        path.unlink()
+                        raise
+                    return db.doc(doc_id)
+            return await _finish_file_work(asyncio.get_running_loop().run_in_executor(None, publish))
     except LookupError as error:
         raise HTTPException(404, str(error)) from error
     except ValueError as error:
@@ -414,6 +436,7 @@ def _delete_documents(*, doc_id=None, folder_id=None):
             raise HTTPException(500, "삭제하지 못했습니다. 폴더·문서 기록과 파일은 유지됩니다") from error
         for key in list(_meta_cache):
             if key.split(":", 1)[0] in deleted_ids: del _meta_cache[key]
+        for id in deleted_ids: _terms_cache.pop(id, None)
         failed = []
         for _, temporary in moved:
             try: os.remove(temporary)
@@ -465,7 +488,7 @@ def move_doc_to_folder(doc_id: str, body: DocFolderIn):
 def page_sizes_api(doc_id: str, response: Response):
     with _doc_files_lock:
         document = get_doc(doc_id)
-        sizes = pdfx.page_sizes(document["path"])
+        sizes = _pdf_call(pdfx.page_sizes, document["path"])
     response.headers["Cache-Control"] = "max-age=3600"
     return sizes
 
@@ -473,7 +496,10 @@ def page_sizes_api(doc_id: str, response: Response):
 def page_png(doc_id: str, pno: int, scale: float = 2.0):
     with _doc_files_lock:
         d = get_doc(doc_id)
-        return Response(pdfx.render_page(d["path"], pno, scale), media_type="image/png",
+        if not 0 <= pno < d["pages"]: raise HTTPException(404, "page")
+        try: image = _pdf_call(pdfx.render_page, d["path"], pno, scale)
+        except ValueError as error: raise HTTPException(400, str(error)) from error
+        return Response(image, media_type="image/png",
                         headers={"Cache-Control": "max-age=3600"})
 
 @app.get("/api/docs/{doc_id}/page/{pno}/meta")
@@ -491,7 +517,7 @@ class LookupIn(BaseModel):
 @app.post("/api/docs/{doc_id}/lookup")
 async def lookup(doc_id: str, body: LookupIn):
     if body.kind not in ("word", "sentence"): raise HTTPException(400)
-    meta = page_meta(doc_id, body.page)
+    meta = await asyncio.to_thread(page_meta, doc_id, body.page)
     if not body.word_ids or any(i < 0 or i >= len(meta["words"]) for i in body.word_ids):
         raise HTTPException(400, "올바른 단어 범위를 선택하세요")
     text = body.text.strip()
@@ -503,7 +529,7 @@ async def lookup(doc_id: str, body: LookupIn):
     ex = db.find_lookup(doc_id, body.page, body.kind, text, body.word_ids, engine)
     if ex: return ex
     try:
-        lid = db.add_lookup(doc_id, body.page, body.kind, text, body.word_ids, engine)
+        lid = await asyncio.to_thread(db.add_lookup, doc_id, body.page, body.kind, text, body.word_ids, engine)
     except LookupError as e:
         raise HTTPException(404, str(e))
     await queue.put(lid)
@@ -522,9 +548,11 @@ def del_lookup(lid: int):
 
 @app.post("/api/lookups/{lid}/retry")
 async def retry_lookup(lid: int):
-    with db.conn() as c:
-        changed = c.execute("UPDATE lookups SET status='pending', error=NULL WHERE id=? "
-                            "AND EXISTS(SELECT 1 FROM docs WHERE docs.id=lookups.doc_id)", (lid,)).rowcount
+    def retry():
+        with db.conn() as c:
+            return c.execute("UPDATE lookups SET status='pending', error=NULL WHERE id=? "
+                             "AND EXISTS(SELECT 1 FROM docs WHERE docs.id=lookups.doc_id)", (lid,)).rowcount
+    changed = await asyncio.to_thread(retry)
     if not changed: raise HTTPException(404, "조회 기록을 찾을 수 없습니다")
     await queue.put(lid); return {"ok": True}
 
@@ -555,13 +583,13 @@ async def add_q(doc_id: str, body: QIn):
             engine = llm.validate_engine(body.engine.model_dump()) if body.engine else llm.selection()
         except ValueError as e:
             raise HTTPException(400, str(e))
-        terms = _doc_terms(doc_id)
+        terms = await asyncio.to_thread(_doc_terms, doc_id)
         try:
             text = await asyncio.get_event_loop().run_in_executor(pool, llm.fix_transcript, text, terms, d.get("subject") or d["name"], engine)
         except Exception as e:
             error = str(e)[:300]
     try:
-        qid = db.add_question(doc_id, text, body.raw, engine if not error else None)
+        qid = await asyncio.to_thread(db.add_question, doc_id, text, body.raw, engine if not error else None)
     except LookupError as e:
         raise HTTPException(404, str(e))
     return {"id": qid, "text": text, "raw": body.raw, "provider": engine["provider"] if engine and not error else "",
@@ -582,11 +610,11 @@ async def add_q_audio(doc_id: str, file: UploadFile = File(...), selection: str 
     if not chosen["model"]:
         raise HTTPException(400, "모델 관리에서 질문 받아쓰기 모델을 선택하세요")
     tmp = os.path.join(DATA, f"q_{uuid.uuid4().hex[:8]}.webm")
-    with open(tmp, "wb") as f: shutil.copyfileobj(file.file, f)
     loop = asyncio.get_event_loop()
     try:
-        terms = _doc_terms(doc_id) if chosen["term_hints"] else []
-        raw = await loop.run_in_executor(pool, stt.transcribe, tmp, terms, chosen)
+        await _finish_file_work(loop.run_in_executor(None, _copy_upload, file.file, tmp))
+        terms = await asyncio.to_thread(_doc_terms, doc_id) if chosen["term_hints"] else []
+        raw = await _finish_file_work(loop.run_in_executor(pool, stt.transcribe, tmp, terms, chosen))
     except Exception as e:
         get_doc(doc_id)
         code = 404 if isinstance(e, LookupError) else 400 if isinstance(e, ValueError) else 503
@@ -629,15 +657,13 @@ def summary_prompt():
     return {"prompt": open(os.path.join(PROMPTS, "요약-프롬프트.md"), encoding="utf-8").read()}
 
 def _doc_terms(doc_id: str) -> list[str]:
-    terms: dict[str, int] = {}
     with _doc_files_lock:
         d = get_doc(doc_id)
-        with fitz.open(d["path"]) as f:
-            for p in f:
-                for w in re.findall(r"[A-Za-z][A-Za-z\-]{3,}", p.get_text()):
-                    terms[w] = terms.get(w, 0) + 1
-    stop = {"this","that","with","from","then","than","into","when","which","where","there","these","those","have","will","each","also","only","some","such","more","most","other","their","about","between","after","before","while","because"}
-    return [t for t, _ in sorted(terms.items(), key=lambda kv: -kv[1]) if t.lower() not in stop][:150]
+        if doc_id not in _terms_cache:
+            _terms_cache[doc_id] = _pdf_call(pdfx.document_terms, d["path"])
+            if len(_terms_cache) > 32: _terms_cache.popitem(last=False)
+        _terms_cache.move_to_end(doc_id)
+        return _terms_cache[doc_id]
 
 # ---------- 내보내기 ----------
 @app.post("/api/docs/{doc_id}/export")
@@ -649,7 +675,7 @@ def export(doc_id: str):
         sent_ann = [{"page": l["page"], "english": l["text"], "korean": l["result"]["translation"], "note": l["result"].get("note", "")} for l in items if l["kind"] == "sentence"]
         metas = {p: page_meta(doc_id, p) for p in {a["page"] for a in word_ann}}
         out = _export_path(doc_id)
-        pdfx.export(d["path"], out, word_ann, sent_ann, metas)
+        _pdf_call(pdfx.export, d["path"], out, word_ann, sent_ann, metas)
     return {"path": out, "words": len(word_ann), "sentences": len(sent_ann)}
 
 @app.get("/api/docs/{doc_id}/export/download")

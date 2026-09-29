@@ -1,6 +1,6 @@
 """PDF 추출·렌더링·내보내기 (PyMuPDF)."""
 from __future__ import annotations
-import glob, os, re
+import glob, math, os, re
 import fitz
 
 META_VERSION = 2
@@ -117,12 +117,15 @@ def extract_page(page: fitz.Page) -> dict:
             "w": page.rect.width, "h": page.rect.height, "right": right}
 
 def render_page(path: str, pno: int, scale: float = 2.0) -> bytes:
-    doc = fitz.open(path)
-    pix = doc[pno].get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
-    return pix.tobytes("png")
-
-def page_count(path: str) -> int:
-    return len(fitz.open(path))
+    if not math.isfinite(scale) or not 0.5 <= scale <= 4:
+        raise ValueError("페이지 배율은 0.5~4 사이여야 합니다")
+    with fitz.open(path) as document:
+        page = document[pno]
+        width, height = page.rect.width, page.rect.height
+        limit = min(8192 / width, 8192 / height, math.sqrt(16_000_000 / (width * height)))
+        if scale >= limit: scale = limit * 0.999  # 픽셀 반올림까지 포함해 약 16MP 이내로 제한한다.
+        pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
+        return pix.tobytes("png")
 
 def page_metadata(path: str, pno: int) -> dict:
     with fitz.open(path) as document:
@@ -131,6 +134,15 @@ def page_metadata(path: str, pno: int) -> dict:
 def page_sizes(path: str) -> list[dict]:
     with fitz.open(path) as document:
         return [{"w": page.rect.width, "h": page.rect.height} for page in document]
+
+def document_terms(path: str) -> list[str]:
+    terms: dict[str, int] = {}
+    with fitz.open(path) as document:
+        for page in document:
+            for word in re.findall(r"[A-Za-z][A-Za-z\-]{3,}", page.get_text()):
+                terms[word] = terms.get(word, 0) + 1
+    stop = {"this","that","with","from","then","than","into","when","which","where","there","these","those","have","will","each","also","only","some","such","more","most","other","their","about","between","after","before","while","because"}
+    return [term for term, _ in sorted(terms.items(), key=lambda item: -item[1]) if term.lower() not in stop][:150]
 
 RED = (0.85, 0.1, 0.1)
 
