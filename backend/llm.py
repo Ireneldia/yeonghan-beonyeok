@@ -1,6 +1,6 @@
 """Codex·Claude Code 구독 또는 Ollama(Mac GPU)로 번역·교정한다."""
 from __future__ import annotations
-import asyncio, json, os, re, subprocess, shutil, tempfile, threading
+import asyncio, json, os, re, subprocess, shutil, tempfile, threading, time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.request import Request, urlopen
@@ -14,7 +14,35 @@ OLLAMA_URL = "http://127.0.0.1:11434"
 _settings_lock = threading.Lock()
 # ponytail: 로컬 GPU에는 한 요청씩; 실제 처리량 측정 후에만 병렬 추론을 늘린다.
 _local_lock = threading.Lock()
-_catalog_cache: dict[str, list[dict]] = {}
+_catalog_cache: dict[str, tuple[float, dict]] = {}
+_catalog_locks = {provider: threading.Lock() for provider in ("codex", "claude")}
+
+
+def _provider_catalog(provider: str, refresh: bool = False) -> dict:
+    started = time.monotonic()
+    with _catalog_locks[provider]:
+        cached = _catalog_cache.get(provider)
+        if cached:
+            updated, result = cached
+            ttl = 10 if result.get("error") else 60
+            # A concurrent refresh shares the request that just finished.
+            if updated >= started or (not refresh and started - updated < ttl):
+                return result
+        try:
+            if provider == "codex":
+                result = {"models": asyncio.run(_codex_models())}
+            else:
+                import claude_cli
+                result = {"models": claude_cli.models()}
+                if not claude_cli.auth_status():
+                    result["error"] = "Claude Code 로그인이 필요합니다: claude auth login"
+        except Exception as error:
+            result = {"models": [], "error": (
+                "Codex 모델 목록 확인 실패. codex login과 네트워크를 확인하세요"
+                if provider == "codex" else str(error)[:200]
+            )}
+        _catalog_cache[provider] = (time.monotonic(), result)
+        return result
 
 
 def _efforts(values) -> list[dict]:
@@ -56,13 +84,10 @@ def _check_options(engine: dict, row: dict | None = None):
         if provider == "local":
             row = _local_model(engine["model"])
         else:
-            if provider not in _catalog_cache:
-                if provider == "codex":
-                    _catalog_cache[provider] = asyncio.run(_codex_models())
-                else:
-                    import claude_cli
-                    _catalog_cache[provider] = claude_cli.models()
-            row = next((r for r in _catalog_cache[provider] if r["id"] == engine["model"]), None)
+            catalog = _provider_catalog(provider)
+            if not catalog["models"] and catalog.get("error"):
+                raise RuntimeError(catalog["error"])
+            row = next((r for r in catalog["models"] if r["id"] == engine["model"]), None)
     if row is None:
         raise ValueError("모델의 지원 설정을 확인하지 못했습니다. 모델 목록을 새로고침하세요")
     if engine.get("effort") and engine["effort"] not in [e["id"] for e in row.get("efforts", [])]:
@@ -241,14 +266,13 @@ async def _codex_models() -> list[dict]:
                     await process.wait()
 
 
-def models() -> dict:
-    import claude_cli
+def models(refresh: bool = False) -> dict:
     machine = model_fit.hardware()
     result = {"codex": [], "local": [], "claude": [], "errors": {}, "gpu": {"state": "unavailable"},
               "hardware": machine}
     with ThreadPoolExecutor(max_workers=3) as pool:
-        codex = pool.submit(lambda: asyncio.run(_codex_models()))
-        claude = pool.submit(claude_cli.models)
+        catalogs = {provider: pool.submit(_provider_catalog, provider, refresh)
+                    for provider in ("codex", "claude")}
         local = pool.submit(_ollama, "/api/tags")
         try:
             installed = local.result().get("models", [])
@@ -261,24 +285,17 @@ def models() -> dict:
                 except ValueError:
                     continue
             result["local"] = model_fit.annotate(result["local"], machine, installed=installed, running=running)
-            result["gpu"] = gpu_status(settings()["local_model"], running)
             selected = settings()["local_model"]
+            result["gpu"] = gpu_status(selected, running)
             if not any(m["id"] in (selected, selected + ":latest") for m in result["local"]):
                 result["errors"]["local"] = f"{selected} 모델이 없습니다. ./scripts/setup-local.sh로 준비하세요"
         except Exception as e:
             result["errors"]["local"] = str(e)[:200]
-        try:
-            result["codex"] = codex.result()
-            _catalog_cache["codex"] = result["codex"]
-        except Exception:
-            result["errors"]["codex"] = "Codex 모델 목록 확인 실패. codex login과 네트워크를 확인하세요"
-        try:
-            result["claude"] = claude.result()
-            _catalog_cache["claude"] = result["claude"]
-            if not claude_cli.auth_status():
-                result["errors"]["claude"] = "Claude Code 로그인이 필요합니다: claude auth login"
-        except Exception as e:
-            result["errors"]["claude"] = str(e)[:200]
+        for provider, pending in catalogs.items():
+            catalog = pending.result()
+            result[provider] = catalog["models"]
+            if catalog.get("error"):
+                result["errors"][provider] = catalog["error"]
     return result
 
 

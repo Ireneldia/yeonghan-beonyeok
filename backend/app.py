@@ -55,8 +55,8 @@ def set_llm_settings(body: LLMSettings):
         raise HTTPException(503, str(e)[:200])
 
 @app.get("/api/llm/models")
-def get_llm_models():
-    return llm.models()
+def get_llm_models(refresh: bool = False):
+    return llm.models(refresh=refresh)
 
 @app.get("/api/llm/local/search")
 def search_local_models(q: str = ""):

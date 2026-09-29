@@ -8,28 +8,37 @@ export function useModels() {
   const [models, setModels] = useState<Models | null>(null)
   const [busy, setBusy] = useState(true)
   const sequence = useRef({ revision: 0, saving: false })
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (force = false, readSettings = true) => {
     const guard = sequence.current
     if (guard.saving) return
     const request = ++guard.revision
-    const [s, m] = await Promise.allSettled([
-      api<Settings>("/api/llm/settings"),
-      api<Models>("/api/llm/models"),
+    await Promise.all([
+      readSettings &&
+        api<Settings>("/api/llm/settings").then(
+          (value) => {
+            if (request === guard.revision) setSettings(value)
+          },
+          (error) => {
+            if (request === guard.revision)
+              toast.error("모델 설정을 불러오지 못했습니다", {
+                description: String(error),
+              })
+          }
+        ),
+      api<Models>(`/api/llm/models${force ? "?refresh=true" : ""}`).then(
+        (value) => {
+          if (request === guard.revision) setModels(value)
+        },
+        () => {
+          if (request === guard.revision)
+            toast.error("모델 목록을 불러오지 못했습니다")
+        }
+      ),
     ])
-    if (request !== guard.revision) return
-    if (s.status === "fulfilled") setSettings(s.value)
-    else
-      toast.error("모델 설정을 불러오지 못했습니다", {
-        description: String(s.reason),
-      })
-    if (m.status === "fulfilled") setModels(m.value)
-    else toast.error("모델 목록을 불러오지 못했습니다")
-    setBusy(false)
+    if (request === guard.revision) setBusy(false)
   }, [])
   useEffect(() => {
     const guard = sequence.current
-    // Response handlers update state after I/O; this effect does not set state synchronously.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     void refresh()
     return () => {
       guard.revision++
@@ -50,7 +59,7 @@ export function useModels() {
       if (request !== guard.revision) return
       setSettings(saved)
       guard.saving = false
-      await refresh()
+      await refresh(false, false)
     } catch (error) {
       if (request === guard.revision) {
         guard.saving = false
@@ -66,8 +75,9 @@ export function useModels() {
     models,
     busy,
     refresh: async () => {
+      if (sequence.current.saving) return
       setBusy(true)
-      await refresh()
+      await refresh(true)
     },
     change,
   }
