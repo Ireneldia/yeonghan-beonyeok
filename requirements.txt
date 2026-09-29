@@ -5,3 +5,7 @@ pymupdf
 rapidfuzz
 genanki
 faster-whisper
+# Apple Silicon ASR: 검증한 MLX/전처리기 API를 고정한다. CPU Whisper 경로는 다른 OS에서도 유지된다.
+mlx-audio[stt]==0.5.7; platform_system == "Darwin" and platform_machine == "arm64"
+mlx==0.32.3; platform_system == "Darwin" and platform_machine == "arm64"
+transformers==5.17.0; platform_system == "Darwin" and platform_machine == "arm64"

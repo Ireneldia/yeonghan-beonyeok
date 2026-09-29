@@ -4,11 +4,11 @@ from concurrent.futures import ThreadPoolExecutor
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import FileResponse, Response, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from typing import Literal
 import fitz
 
-import db, llm, pdfx, match as matcher, anki, stt, local_models
+import db, llm, pdfx, match as matcher, anki, stt, local_models, speech_models
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.environ.get("YH_DATA_DIR") or os.path.join(ROOT, "data"); DOCS = os.path.join(DATA, "docs"); EXPORTS = os.path.join(DATA, "exports")
@@ -122,6 +122,57 @@ def delete_local_model(body: DownloadIn):
         raise HTTPException(400, str(e))
     except RuntimeError as e:
         raise HTTPException(503, str(e))
+
+# ---------- 질문 받아쓰기 모델 ----------
+class STTSettings(BaseModel):
+    model: str
+    language: Literal["auto", "ko", "en"] = "auto"
+    term_hints: bool = True
+
+def _speech_action(action, *args):
+    try:
+        return action(*args)
+    except speech_models.DownloadBusy as e:
+        raise HTTPException(409, str(e)) from e
+    except LookupError as e:
+        raise HTTPException(404, str(e)) from e
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except (RuntimeError, OSError) as e:
+        raise HTTPException(503, str(e)) from e
+
+@app.get("/api/stt/settings")
+def get_stt_settings():
+    return _speech_action(speech_models.settings)
+
+@app.put("/api/stt/settings")
+def set_stt_settings(body: STTSettings):
+    return _speech_action(speech_models.save_settings, body.model_dump())
+
+@app.get("/api/stt/models")
+def search_stt_models(q: str = ""):
+    return {"models": _speech_action(speech_models.catalog, q)}
+
+@app.get("/api/stt/installed")
+def installed_stt_models():
+    return {"models": _speech_action(speech_models.installed)}
+
+@app.delete("/api/stt/installed")
+def delete_stt_model(body: DownloadIn):
+    _speech_action(stt.delete_model, body.model)
+    return {"ok": True}
+
+@app.post("/api/stt/download")
+def download_stt_model(body: DownloadIn):
+    return _speech_action(speech_models.start_download, body.model)
+
+@app.get("/api/stt/download")
+def stt_download_status():
+    return speech_models.download_status()
+
+@app.delete("/api/stt/download")
+def clear_stt_download(body: DownloadIn):
+    return _speech_action(speech_models.clear_download, body.model)
 
 # ---------- 페이지 메타 ----------
 def page_meta(doc_id: str, pno: int) -> dict:
@@ -307,26 +358,37 @@ async def add_q(doc_id: str, body: QIn):
             "effort": engine["effort"] if engine and not error else "", "fast": engine["fast"] if engine and not error else False}
 
 @app.post("/api/docs/{doc_id}/questions/audio")
-async def add_q_audio(doc_id: str, file: UploadFile = File(...)):
-    """녹음 파일 → Whisper(한국어) → 교정 → 저장"""
+async def add_q_audio(doc_id: str, file: UploadFile = File(...), selection: str | None = Form(None)):
+    """녹음 시작 때 선택한 모델과 언어로 받아쓴다. 교정은 별도 질문 저장 요청에서 수행한다."""
     d = db.doc(doc_id)
     if not d: raise HTTPException(404)
+    if selection is None:
+        chosen = speech_models.settings()
+    else:
+        try: chosen = STTSettings.model_validate_json(selection).model_dump()
+        except (ValidationError, ValueError) as e:
+            raise HTTPException(400, "음성 인식 설정을 확인하세요") from e
+    if not chosen["model"]:
+        raise HTTPException(400, "모델 관리에서 질문 받아쓰기 모델을 선택하세요")
     tmp = os.path.join(DATA, f"q_{uuid.uuid4().hex[:8]}.webm")
     with open(tmp, "wb") as f: shutil.copyfileobj(file.file, f)
     loop = asyncio.get_event_loop()
     try:
-        terms = _doc_terms(doc_id)
-        raw = await loop.run_in_executor(pool, stt.transcribe, tmp, terms)
+        terms = _doc_terms(doc_id) if chosen["term_hints"] else []
+        raw = await loop.run_in_executor(pool, stt.transcribe, tmp, terms, chosen)
     except Exception as e:
-        raise HTTPException(500, f"받아쓰기 실패: {str(e)[:120]}")
+        get_doc(doc_id)
+        code = 404 if isinstance(e, LookupError) else 400 if isinstance(e, ValueError) else 503
+        raise HTTPException(code, f"받아쓰기 실패: {str(e)[:180]}") from e
     finally:
         try: os.remove(tmp)
         except OSError: pass
+    get_doc(doc_id)
     if not raw: raise HTTPException(400, "들린 말이 없어요")
     return {"raw": raw}
 
 @app.get("/api/stt/status")
-def stt_status(): return stt.status
+def stt_status(): return _speech_action(stt.status_snapshot)
 
 @app.get("/api/docs/{doc_id}/questions")
 def get_qs(doc_id: str):
