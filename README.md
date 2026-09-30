@@ -153,14 +153,17 @@ data/              업로드 PDF, 페이지 캐시, 내보낸 파일 (git 제외
 2. **Codex CLI** 설치 + ChatGPT 로그인, **Claude Code** 설치 + 구독 로그인, 또는 Apple Silicon Mac에서 `./scripts/setup-local.sh` 실행. 사용할 모드 하나만 준비해도 된다.
 3. **질문 받아쓰기 모델** → `모델 관리 → 음성 인식`에서 다운로드 후 선택
 4. **Chrome** (🎤 읽기의 음성 인식은 Chrome 내장)
-5. **Node.js 24 LTS + pnpm** 설치.
+5. **Node.js 24 LTS** 설치. pnpm은 없어도 `run.sh`가 npx로 대신 실행한다.
 6. 실행 → `./run.sh` 또는 `./start.sh`, 브라우저에서 http://localhost:8766
 
 화면은 앱에 포함된 Pretendard, PDF 내보내기는 macOS 기본 AppleGothic을 사용한다. 포트가 겹치면 `run.sh`·`.claude/launch.json`의 8766을 바꾼다.
-바탕화면 바로가기를 원하면 `start.sh`를 부르는 `.command` 파일을 하나 만들면 된다(아래 참고).
+바탕화면 바로가기는 `./scripts/make-shortcut.sh`로 만든다(아래 참고).
 
 ## 바로가기
-바탕화면의 `영한번역.command`를 더블클릭하면 서버를 띄우고 Chrome을 연다(이미 떠 있으면 Chrome만). 터미널 창을 닫으면 서버가 꺼진다. 실체는 `start.sh`.
+```bash
+./scripts/make-shortcut.sh
+```
+바탕화면에 아이콘이 붙은 `영한번역.command`가 생긴다. 더블클릭하면 서버를 띄우고 Chrome을 연다(이미 떠 있으면 Chrome만). 터미널 창을 닫으면 서버가 꺼진다. 실체는 `start.sh`, 아이콘은 `assets/icon.png`. 다른 위치에 만들려면 경로를 인자로 준다.
 
 ## 검증
 
