@@ -1,9 +1,10 @@
-import { useState } from "react"
+import { useEffect, useRef, useState, type CSSProperties } from "react"
 import {
   BookOpen,
   Copy,
   Loader2,
   MessageSquare,
+  Minus,
   Pencil,
   Plus,
   RotateCcw,
@@ -60,7 +61,43 @@ function Source({ value }: { value: Lookup | Question }) {
   )
 }
 
+const SCALE_KEY = "yh-notes-scale"
+const clampScale = (value: number) =>
+  Math.round(Math.min(2, Math.max(0.8, value)) * 10) / 10
+
 export function NotesPanel(props: Props) {
+  // 메모 패널 글자 크기. 패널 위에 마우스를 두고 ⌘/Ctrl + -, +, 0 으로도 조절한다.
+  const [scale, setScale] = useState(() => {
+    try {
+      const saved = Number(localStorage.getItem(SCALE_KEY))
+      return saved ? clampScale(saved) : 1
+    } catch {
+      return 1
+    }
+  })
+  const hovering = useRef(false)
+  useEffect(() => {
+    try {
+      localStorage.setItem(SCALE_KEY, String(scale))
+    } catch {
+      /* 저장 실패는 무시 */
+    }
+  }, [scale])
+  useEffect(() => {
+    const keydown = (event: KeyboardEvent) => {
+      if (!hovering.current || !(event.metaKey || event.ctrlKey)) return
+      if (!["=", "+", "-", "0"].includes(event.key)) return
+      event.preventDefault() // 브라우저 줌과 PDF 줌 대신 패널 글자만 조절
+      setScale((current) =>
+        event.key === "0"
+          ? 1
+          : clampScale(current + (event.key === "-" ? -0.1 : 0.1))
+      )
+    }
+    window.addEventListener("keydown", keydown, true)
+    return () => window.removeEventListener("keydown", keydown, true)
+  }, [])
+  const zoomStyle = { zoom: scale } as CSSProperties
   const [input, setInput] = useState("")
   const [adding, setAdding] = useState(false)
   const [editing, setEditing] = useState<Question | null>(null)
@@ -151,9 +188,15 @@ export function NotesPanel(props: Props) {
         value={props.tab}
         onValueChange={(value) => props.onTabChange(String(value))}
         className="h-full min-h-0 gap-0 bg-background"
+        onMouseEnter={() => {
+          hovering.current = true
+        }}
+        onMouseLeave={() => {
+          hovering.current = false
+        }}
       >
-        <div className="border-b px-4 py-3">
-          <TabsList className="w-full">
+        <div className="flex items-center gap-2 border-b px-4 py-3">
+          <TabsList className="min-w-0 flex-1">
             <TabsTrigger value="words">
               단어
               {words.length > 0 && (
@@ -175,22 +218,53 @@ export function NotesPanel(props: Props) {
               )}
             </TabsTrigger>
           </TabsList>
+          <div
+            className="flex shrink-0 items-center"
+            title="글자 크기 (패널 위에서 ⌘− / ⌘+ / ⌘0)"
+          >
+            <Button
+              size="icon-sm"
+              variant="ghost"
+              aria-label="글자 작게"
+              disabled={scale <= 0.8}
+              onClick={() => setScale((current) => clampScale(current - 0.1))}
+            >
+              <Minus />
+            </Button>
+            <button
+              type="button"
+              className="w-10 text-center text-xs text-muted-foreground tabular-nums"
+              aria-label="글자 크기 초기화"
+              onClick={() => setScale(1)}
+            >
+              {Math.round(scale * 100)}%
+            </button>
+            <Button
+              size="icon-sm"
+              variant="ghost"
+              aria-label="글자 크게"
+              disabled={scale >= 2}
+              onClick={() => setScale((current) => clampScale(current + 0.1))}
+            >
+              <Plus />
+            </Button>
+          </div>
         </div>
         <TabsContent value="words" className="min-h-0 overflow-hidden">
           <ScrollArea className="h-full">
-            <div className="space-y-3 p-4">{rows(words)}</div>
+            <div className="space-y-3 p-4" style={zoomStyle}>{rows(words)}</div>
           </ScrollArea>
         </TabsContent>
         <TabsContent value="sentences" className="min-h-0 overflow-hidden">
           <ScrollArea className="h-full">
-            <div className="space-y-3 p-4">{rows(sentences)}</div>
+            <div className="space-y-3 p-4" style={zoomStyle}>{rows(sentences)}</div>
           </ScrollArea>
         </TabsContent>
         <TabsContent
           value="questions"
           className="flex min-h-0 flex-col overflow-hidden"
         >
-          <div className="space-y-2 border-b p-4">
+          <div className="space-y-2 border-b p-4" style={zoomStyle}>
             <Textarea
               aria-label="새 질문"
               placeholder="궁금한 점을 남겨 보세요"
@@ -214,7 +288,7 @@ export function NotesPanel(props: Props) {
             </div>
           </div>
           <ScrollArea className="min-h-0 flex-1">
-            <div className="space-y-3 p-4">
+            <div className="space-y-3 p-4" style={zoomStyle}>
               {props.questions.map((q) => (
                 <article
                   key={q.id}
