@@ -1,0 +1,119 @@
+{
+  "fill" : {
+    "solid" : "srgb:0.27451,0.33333,0.73725,1.00000"
+  },
+  "groups" : [
+    {
+      "blur-material" : 0.12,
+      "layers" : [
+        {
+          "fill-specializations" : [
+            {
+              "value" : {
+                "solid" : "srgb:1.00000,0.97647,0.94118,1.00000"
+              }
+            },
+            {
+              "appearance" : "dark",
+              "value" : "automatic"
+            }
+          ],
+          "glass" : false,
+          "image-name" : "korean-ga.svg",
+          "name" : "가",
+          "position" : {
+            "scale" : 1,
+            "translation-in-points" : [
+              -39,
+              -38
+            ]
+          }
+        },
+        {
+          "fill-specializations" : [
+            {
+              "appearance" : "dark",
+              "value" : "automatic"
+            }
+          ],
+          "glass" : true,
+          "image-name" : "panel-front.svg",
+          "name" : "유리 패널",
+          "position" : {
+            "scale" : 1,
+            "translation-in-points" : [
+              0,
+              0
+            ]
+          }
+        }
+      ],
+      "lighting" : "individual",
+      "name" : "한국어 · 앞 패널",
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.16
+      },
+      "specular" : true,
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.35
+      }
+    },
+    {
+      "blur-material" : 0.12,
+      "layers" : [
+        {
+          "fill-specializations" : [
+            {
+              "value" : {
+                "solid" : "srgb:1.00000,0.97647,0.94118,1.00000"
+              }
+            },
+            {
+              "appearance" : "dark",
+              "value" : "automatic"
+            }
+          ],
+          "glass" : false,
+          "image-name" : "latin-a.svg",
+          "name" : "A",
+          "position" : {
+            "scale" : 1,
+            "translation-in-points" : [
+              20,
+              2
+            ]
+          }
+        },
+        {
+          "fill-specializations" : [
+            {
+              "appearance" : "dark",
+              "value" : "automatic"
+            }
+          ],
+          "glass" : true,
+          "image-name" : "panel-back.svg",
+          "name" : "유리 패널"
+        }
+      ],
+      "lighting" : "individual",
+      "name" : "영어 · 뒤 패널",
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.16
+      },
+      "specular" : true,
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.35
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "squares" : [
+      "macOS"
+    ]
+  }
+}
